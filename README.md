@@ -2,7 +2,7 @@
 
 ![kns badge](badge.svg)
 
-A bash/zsh tool that automatically switches kubectl context and namespace based on your current directory. Similar to how `asdf` uses `.tool-versions` files, `kns` uses `.kns.conf` files to manage Kubernetes contexts per project.
+A bash/zsh tool that automatically switches kubectl context and namespace based on your current directory. `kns` uses `.kns.conf` files to manage Kubernetes contexts per project.
 
 ## Features
 
@@ -313,4 +313,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contributing
 
 [Add contribution guidelines here]
+
+## Support
+
+If you find `kns` useful and would like to support its development, consider:
+
+- ⭐ **Star the repository** - Show your appreciation
+- 💰 **GitHub Sponsors** - [Sponsor me on GitHub](https://github.com/sponsors/nbu)
+- ☕ **Ko-fi** - [Buy me a coffee](https://ko-fi.com/nbu112293)
+
+
+Your support helps maintain and improve this project. Thank you!
 
