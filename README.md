@@ -15,21 +15,16 @@ A bash/zsh tool that automatically switches kubectl context and namespace based 
 
 ### One-Line Install (Recommended)
 
-Install with a single command. Replace `USERNAME` and `REPO` with your GitHub username and repository name:
+Install with a single command:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/bnebosenko/kns/master/install-standalone.sh)"
-```
-
-**Example:**
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/bnebosenko/kns/master/install-standalone.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/nbu/kns/main/install-standalone.sh)"
 ```
 
 Or if you prefer to review the installer first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bnebosenko/kns/master/install-standalone.sh -o /tmp/install-kns.sh
+curl -fsSL https://raw.githubusercontent.com/nbu/kns/main/install-standalone.sh -o /tmp/install-kns.sh
 bash /tmp/install-kns.sh
 ```
 

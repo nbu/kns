@@ -5,9 +5,9 @@ set -euo pipefail
 
 # Configuration
 KNS_REPO_URL="${KNS_REPO_URL:-https://raw.githubusercontent.com}"
-KNS_REPO_USER="${KNS_REPO_USER:-bnebosenko}"
+KNS_REPO_USER="${KNS_REPO_USER:-nbu}"
 KNS_REPO_NAME="${KNS_REPO_NAME:-kns}"
-KNS_REPO_BRANCH="${KNS_REPO_BRANCH:-master}"
+KNS_REPO_BRANCH="${KNS_REPO_BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Colors for output
