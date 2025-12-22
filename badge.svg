@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 80" width="400" height="80">
+  <defs>
+    <linearGradient id="badgeBg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#7C3AED;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#5B21B6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Badge background -->
+  <rect x="0" y="0" width="400" height="80" rx="12" fill="url(#badgeBg)"/>
+  
+  <!-- Icon: Stacked namespaces -->
+  <g transform="translate(50, 40)">
+    <!-- Bottom layer -->
+    <rect x="-18" y="8" width="36" height="24" rx="3" fill="#ffffff" opacity="0.3"/>
+    <!-- Middle layer -->
+    <rect x="-15" y="2" width="30" height="22" rx="3" fill="#ffffff" opacity="0.5"/>
+    <!-- Top layer -->
+    <rect x="-12" y="-4" width="24" height="20" rx="3" fill="#ffffff" opacity="0.9"/>
+    <!-- Switch arrow -->
+    <circle cx="0" cy="-12" r="6" fill="none" stroke="#ffffff" stroke-width="1.5"/>
+    <path d="M 0,-18 L 0,-15 L -1.5,-15 L 0,-12 L 1.5,-15 L 0,-15 Z" fill="#ffffff"/>
+  </g>
+  
+  <!-- Main text -->
+  <text x="90" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="700" fill="#ffffff" letter-spacing="-0.5">kns</text>
+  
+  <!-- Description -->
+  <text x="145" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#ffffff" opacity="0.9">Kubernetes Namespace Switcher</text>
+</svg>
