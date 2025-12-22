@@ -6,8 +6,9 @@ A bash/zsh tool that automatically switches kubectl context and namespace based 
 
 - 🚀 **Automatic context switching** - Changes kubectl context when you `cd` into a directory
 - 📁 **Directory-based configuration** - Uses `.kns.conf` files (similar to asdf's `.tool-versions`)
-- 🔄 **Parent directory lookup** - Finds `.kns.conf` in current or parent directories
+- 🔄 **Parent directory lookup** - Finds and merges `.kns.conf` from current and parent directories
 - ⚡ **Quick kubectl shortcuts** - Fast access to common kubectl commands
+- 🐳 **Pod & Container management** - Set current pod/container per directory for easy access
 - 🐚 **Bash & Zsh compatible** - Works on both shells
 
 ## Installation
@@ -60,6 +61,11 @@ KNS_NAMESPACE="production"
 
 Now, whenever you `cd` into this directory (or any subdirectory), the context will automatically switch to `production-cluster` with namespace `production`.
 
+**Note**: You can have different properties in different `.kns.conf` files. For example:
+- Parent directory can have `KNS_CONTEXT` and `KNS_NAMESPACE`
+- Current directory can have `KNS_POD` and `KNS_CONTAINER`
+- Values are automatically merged when found
+
 ### Commands
 
 #### Context Management
@@ -70,12 +76,15 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   kns set my-cluster  # namespace is optional
   ```
 
-- `kns get` - Show current context/namespace from `.kns.conf`
+- `kns get` - Show current context/namespace/pod/container from `.kns.conf`
   ```bash
   kns get
   # Output:
+  # Source: /path/to/.kns.conf
   # Context: production-cluster
   # Namespace: production
+  # Pod: my-pod-123
+  # Container: app
   ```
 
 - `kns use <context> [namespace]` - Manually switch context
@@ -107,6 +116,45 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
 
 All shortcuts automatically switch context based on `.kns.conf` before executing.
 
+#### Pod & Container Management
+
+- `kns sp <pod-name>` - Set current pod for this directory
+  ```bash
+  kns sp my-pod-123
+  ```
+
+- `kns sc <container-name>` - Set current container (requires pod to be set first)
+  ```bash
+  kns sc my-container
+  ```
+
+- `kns gc` - List containers of current pod
+  ```bash
+  kns gc
+  # Output:
+  # Pod: my-pod-123
+  # Containers:
+  #   - app (current)
+  #   - sidecar
+  ```
+
+- `kns exec <command> [args...]` - Execute command in current pod/container
+  ```bash
+  kns exec ls -la /tmp
+  kns exec cat /etc/hosts
+  ```
+
+- `kns cp <source> <dest>` - Copy files to/from pod (use `pod:` prefix for pod paths)
+  ```bash
+  kns cp local.txt pod:/tmp/file.txt        # Copy to pod
+  kns cp pod:/tmp/file.txt local.txt       # Copy from pod
+  ```
+
+- `kns sh` - Interactive shell into current pod/container
+  ```bash
+  kns sh
+  ```
+
 ### Examples
 
 ```bash
@@ -122,6 +170,16 @@ cd ~/projects/my-app/src
 kns gp
 kns gs
 
+# Set up pod and container for this directory
+kns sp my-pod-123
+kns sc app-container
+kns gc                              # List containers
+
+# Work with the pod
+kns exec ls -la /tmp
+kns cp config.yaml pod:/app/config.yaml
+kns sh                              # Interactive shell
+
 # Switch to different context manually
 kns use staging-cluster staging
 
@@ -129,16 +187,36 @@ kns use staging-cluster staging
 kns unlink
 ```
 
+### Advanced: Merged Configuration
+
+You can split configuration across multiple directories:
+
+```bash
+# In parent directory (~/projects/my-app/.kns.conf)
+KNS_CONTEXT="production-cluster"
+KNS_NAMESPACE="production"
+
+# In subdirectory (~/projects/my-app/frontend/.kns.conf)
+KNS_POD="frontend-pod-123"
+KNS_CONTAINER="nginx"
+
+# When in frontend/, kns will use:
+# - Context/namespace from parent directory
+# - Pod/container from current directory
+```
+
 ## How it works
 
-1. **Configuration files**: `kns` looks for `.kns.conf` files in the current directory and parent directories (similar to how `asdf` finds `.tool-versions`).
+1. **Configuration files**: `kns` looks for `.kns.conf` files in the current directory and parent directories (similar to how `asdf` finds `.tool-versions`). It merges values from all found files, with current directory values taking precedence.
 
 2. **Automatic switching**: The shell integration hooks into the `cd` command. When you change directories, it:
    - Searches for `.kns.conf` in the current and parent directories
-   - Sources the file to get `KNS_CONTEXT` and `KNS_NAMESPACE`
+   - Sources all found files to get `KNS_CONTEXT`, `KNS_NAMESPACE`, `KNS_POD`, and `KNS_CONTAINER`
    - Automatically runs `kubectl config use-context` and sets the namespace
 
 3. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
+
+4. **Pod/Container management**: When you set a pod with `kns sp`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
 
 ## Configuration
 
@@ -177,9 +255,23 @@ export KNS_CONFIG_DIR="$HOME/.config/kns"
 ### Context not switching automatically
 
 - Make sure you've sourced `kns.sh` in your shell rc file
-- Check that `.kns.conf` exists in the directory
+- Check that `.kns.conf` exists in the directory (or parent directory)
 - Verify the file contains `KNS_CONTEXT` variable
-- Try running `kns get` to see if the file is detected
+- Try running `kns get` to see if the file is detected and what values are being used
+
+### Pod/Container not found
+
+- Make sure you've set the pod with `kns sp <pod-name>`
+- Verify the pod exists: `kubectl get pod <pod-name>`
+- Check that you're in the correct context/namespace
+- Run `kns get` to see current configuration
+
+### Command not found in container
+
+- Some minimal/distroless containers don't have common commands like `ls` or shells
+- Try using full paths to executables: `kns exec /app/my-binary`
+- Use `kubectl exec` directly if you know the executable path
+- Check what's available: `kubectl exec <pod> -- ls /bin /usr/bin`
 
 ### kubectl command not found
 

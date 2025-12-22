@@ -7,30 +7,32 @@ kns_cd() {
   builtin cd "$@" || return
   
   # Find and apply context if .kns.conf exists
-  local dir="$PWD"
-  local context_file=""
+  # Merge values from all .kns.conf files from current directory up to root/home
   local KNS_CONTEXT=""
   local KNS_NAMESPACE=""
+  local KNS_POD=""
+  local KNS_CONTAINER=""
   
-  # Search upward from current directory
+  # Collect all .kns.conf files from current directory up to root
+  local files=()
+  local dir="$PWD"
+  
   while [[ "$dir" != "/" ]]; do
     if [[ -f "$dir/.kns.conf" ]]; then
-      context_file="$dir/.kns.conf"
-      break
+      files+=("$dir/.kns.conf")
     fi
     dir=$(dirname "$dir")
   done
   
-  # Fallback: check home directory for default context
-  # Only check if no file was found in the directory tree above
-  if [[ -z "$context_file" ]] && [[ -f "$HOME/.kns.conf" ]]; then
-    context_file="$HOME/.kns.conf"
+  # Add home directory file if it exists
+  if [[ -f "$HOME/.kns.conf" ]]; then
+    files+=("$HOME/.kns.conf")
   fi
   
   # Debug output (enable with KNS_DEBUG=1)
   if [[ "${KNS_DEBUG:-}" == "1" ]]; then
-    if [[ -n "$context_file" ]]; then
-      echo "[kns] Found config: $context_file" >&2
+    if [[ ${#files[@]} -gt 0 ]]; then
+      echo "[kns] Found config files: ${files[*]}" >&2
     else
       echo "[kns] No config file found" >&2
     fi
@@ -43,12 +45,15 @@ kns_cd() {
     rm -f "$manual_override_file"
   fi
   
-  if [[ -n "$context_file" ]]; then
-    # Source the config file to get KNS_CONTEXT and KNS_NAMESPACE
-    # Use a clean environment to avoid variable pollution
-    KNS_CONTEXT=""
-    KNS_NAMESPACE=""
-    source "$context_file" 2>/dev/null || true
+  if [[ ${#files[@]} -gt 0 ]]; then
+    # Source files in reverse order (parent/home first, then current)
+    # This way current directory values override parent values
+    local i
+    for ((i=${#files[@]}-1; i>=0; i--)); do
+      if [[ -f "${files[i]}" ]]; then
+        source "${files[i]}" 2>/dev/null || true
+      fi
+    done
     
     if [[ -n "${KNS_CONTEXT:-}" ]]; then
       # Check if kubectl is available
