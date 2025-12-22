@@ -21,8 +21,8 @@ main() {
     set)
       cmd_set "$@"
       ;;
-    get)
-      cmd_get "$@"
+    current)
+      cmd_current "$@"
       ;;
     use)
       cmd_use "$@"
@@ -190,7 +190,7 @@ EOF
 }
 
 # Get current context
-cmd_get() {
+cmd_current() {
   # Check for manual override first
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   if [[ -f "$manual_override_file" ]]; then
@@ -886,7 +886,7 @@ USAGE:
 
 CONTEXT MANAGEMENT:
     set <context> [namespace]    Set context for current directory
-    get                          Show current context/namespace and source file
+    current                     Show current context/namespace and source file
     use <context> [namespace]    Manually switch context (temporarily overrides .kns.conf)
     list                         List all available kubectl contexts
     link <context> [namespace]   Alias for 'set'
@@ -911,7 +911,7 @@ POD & CONTAINER MANAGEMENT:
 EXAMPLES:
     # Context management
     kns set production-cluster production
-    kns get                                    # Shows context and source file
+    kns current                                # Shows context and source file
     kns use staging-cluster staging            # Temporary override
     kns list                                   # List all contexts
     kns unlink                                 # Remove .kns.conf

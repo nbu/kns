@@ -102,9 +102,9 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   kns set my-cluster  # namespace is optional
   ```
 
-- `kns get` - Show current context/namespace/pod/container from `.kns.conf`
+- `kns current` - Show current context/namespace/pod/container from `.kns.conf`
   ```bash
-  kns get
+  kns current
   # Output:
   # Source: /path/to/.kns.conf
   # Context: production-cluster
@@ -283,14 +283,14 @@ export KNS_CONFIG_DIR="$HOME/.config/kns"
 - Make sure you've sourced `kns.sh` in your shell rc file
 - Check that `.kns.conf` exists in the directory (or parent directory)
 - Verify the file contains `KNS_CONTEXT` variable
-- Try running `kns get` to see if the file is detected and what values are being used
+- Try running `kns current` to see if the file is detected and what values are being used
 
 ### Pod/Container not found
 
 - Make sure you've set the pod with `kns sp <pod-name>`
 - Verify the pod exists: `kubectl get pod <pod-name>`
 - Check that you're in the correct context/namespace
-- Run `kns get` to see current configuration
+- Run `kns current` to see current configuration
 
 ### Command not found in container
 
