@@ -3,6 +3,7 @@
 kns text eol=lf
 kns.sh text eol=lf
 install.sh text eol=lf
+install-standalone.sh text eol=lf
 
 # Configuration files
 *.conf text eol=lf
