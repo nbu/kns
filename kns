@@ -801,6 +801,13 @@ cmd_set() {
     exit 1
   fi
 
+  if _kns_source_merged_conf && _kns_is_multi_env; then
+    echo "Error: this directory uses named environments (KNS_ENVS)." >&2
+    echo "Use: kns env add <name> <context> [namespace]" >&2
+    echo "  or: kns env <name>" >&2
+    exit 1
+  fi
+
   local file="$PWD/$KNS_LOCAL_FILE"
   local existing_pod=""
   local existing_container=""
@@ -1029,6 +1036,25 @@ cmd_set_pod() {
     exit 1
   fi
 
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    auto_switch_context
+    if ! kubectl get pod "$pod" >/dev/null 2>&1; then
+      echo "Error: Pod '$pod' not found" >&2
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_POD" "$pod"
+    echo "Set current pod: $pod"
+    return 0
+  fi
+
   local file="$PWD/$KNS_LOCAL_FILE"
   local existing_context=""
   local existing_namespace=""
@@ -1076,6 +1102,44 @@ cmd_set_container() {
   if [[ -z "$container" ]]; then
     echo "Usage: kns container set <container-name>" >&2
     exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local pod_var="KNS_ENV_${_kns_session_env}_POD"
+    local existing_pod="${!pod_var:-}"
+    if [[ -z "$existing_pod" ]]; then
+      echo "Error: Pod must be set first. Use 'kns pod set <pod-name>' to set it." >&2
+      exit 1
+    fi
+    auto_switch_context
+    local containers
+    containers=$(kubectl get pod "$existing_pod" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+    local found=0 c
+    for c in $containers; do
+      if [[ "$c" == "$container" ]]; then
+        found=1
+        break
+      fi
+    done
+    if [[ $found -eq 0 ]]; then
+      echo "Error: Container '$container' not found in pod '$existing_pod'" >&2
+      echo "Available containers:" >&2
+      for c in $containers; do
+        echo "  - $c" >&2
+      done
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_CONTAINER" "$container"
+    echo "Set current container: $container"
+    return 0
   fi
 
   local file="$PWD/$KNS_LOCAL_FILE"
@@ -1182,6 +1246,31 @@ cmd_unset_pod() {
     esac
   done
 
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local pod_var="KNS_ENV_${_kns_session_env}_POD"
+    local existing_pod="${!pod_var:-}"
+    if [[ -z "$existing_pod" ]]; then
+      echo "No pod set in $file"
+      return 0
+    fi
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_POD"
+    if [[ $clear_container -eq 1 ]]; then
+      _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_CONTAINER"
+      echo "Unset pod and container for $(pwd)"
+    else
+      echo "Unset pod for $(pwd)"
+    fi
+    return 0
+  fi
+
   local file="$PWD/$KNS_LOCAL_FILE"
   if [[ ! -f "$file" ]]; then
     echo "No pod set in $file"
@@ -1219,6 +1308,26 @@ cmd_unset_container() {
   if [[ $# -gt 0 ]]; then
     echo "Usage: kns container unset" >&2
     exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local ctr_var="KNS_ENV_${_kns_session_env}_CONTAINER"
+    local existing_container="${!ctr_var:-}"
+    if [[ -z "$existing_container" ]]; then
+      echo "No container set in $file"
+      return 0
+    fi
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_CONTAINER"
+    echo "Unset container for $(pwd)"
+    return 0
   fi
 
   local file="$PWD/$KNS_LOCAL_FILE"
