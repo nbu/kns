@@ -12,6 +12,7 @@ A bash/zsh tool that automatically switches kubectl context and namespace based 
 - ⚡ **Quick kubectl shortcuts** - Fast access to common kubectl commands
 - 🐳 **Pod debug** - Set current pod/container per directory for easy access
 - 🐚 **Bash & Zsh compatible** - Works on both shells
+- ⌨️ **Shell completions** - Tab-complete commands; optional live kubectl values
 
 ## Installation
 
@@ -35,6 +36,7 @@ bash /tmp/install-kns.sh
 - Install them to `~/.local/bin` (or custom `INSTALL_DIR`)
 - Add them to your PATH
 - Set up shell integration
+- Offer shell Tab completions (on a TTY); non-interactive installs use **static** completions by default
 
 ### Quick Install (From Git)
 
@@ -65,6 +67,27 @@ source ~/.bashrc  # or ~/.zshrc
    ```bash
    source ~/.bashrc  # or ~/.zshrc
    ```
+
+### Shell completions
+
+kns supports Tab completion for bash and zsh.
+
+- **static** (default): subcommands only  
+- **live**: subcommands plus kubectl contexts, namespaces, pods, and containers  
+
+```bash
+kns completion install --mode static   # or --mode live
+kns completion mode live               # switch mode without reinstall
+kns completion uninstall
+```
+
+Installer prompts ask whether to install completions (and which mode). Non-interactive installs wire **static** completions automatically.
+
+Advanced (manual wiring):
+
+```bash
+eval "$(kns completion zsh)"   # or: kns completion bash
+```
 
 ## Usage
 
