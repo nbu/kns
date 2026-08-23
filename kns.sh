@@ -37,6 +37,19 @@ kns_valid_env_name() {
   [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
+kns_clear_env_pins() {
+  local v
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    for v in ${(Mk)parameters:#KNS_ENV_*}; do
+      unset "$v"
+    done
+  else
+    for v in ${!KNS_ENV_@}; do
+      unset "$v"
+    done
+  fi
+}
+
 kns_env_in_list() {
   local want="$1"
   local rest="${KNS_ENVS:-}"
@@ -152,7 +165,7 @@ kns_effective_prompt() {
   local prompt="${KNS_PROMPT_ON_ENTER-}"
   if [[ -n "$prompt" ]]; then
     case "$prompt" in
-      0|off|OFF) echo 0 ;;
+      0|off|OFF|false|False) echo 0 ;;
       *) echo 1 ;;
     esac
     return 0
@@ -225,6 +238,7 @@ kns_kubectl_apply_pins() {
 }
 
 kns_apply_dir_context() {
+  kns_clear_env_pins
   local KNS_CONTEXT="" KNS_NAMESPACE="" KNS_POD="" KNS_CONTAINER=""
   local KNS_ENVS="" KNS_DEFAULT_ENV="" KNS_PROMPT_ON_ENTER=""
   local kns_conf_files
@@ -280,9 +294,14 @@ kns_apply_dir_context() {
       fi
     fi
 
-    if kns_session_read && [[ "$_kns_session_root" == "$owner" ]]; then
+    if kns_session_read && [[ "$_kns_session_root" == "$owner" ]] &&
+      kns_env_in_list "$_kns_session_env"; then
       if kns_env_pins "$_kns_session_env"; then
-        kns_kubectl_apply_pins
+        if ! kns_kubectl_apply_pins; then
+          echo "kns: failed to apply environment '$_kns_session_env' context '$_kns_pin_ctx'" >&2
+        fi
+      else
+        echo "kns: Environment '$_kns_session_env' has no context configured" >&2
       fi
       return 0
     fi
@@ -296,11 +315,16 @@ kns_apply_dir_context() {
     if [[ -z "$chosen" && -n "${KNS_DEFAULT_ENV:-}" ]]; then
       chosen="$KNS_DEFAULT_ENV"
     fi
-    if [[ -n "$chosen" ]] && kns_env_in_list "$chosen" && kns_env_pins "$chosen"; then
-      kns_session_write "$owner" "$chosen"
-      kns_kubectl_apply_pins
-      if [[ "${KNS_QUIET:-}" != "1" ]]; then
-        echo "✓ kns env: $chosen → $_kns_pin_ctx${_kns_pin_ns:+ (ns: $_kns_pin_ns)}"
+    if [[ -n "$chosen" ]] && kns_env_in_list "$chosen"; then
+      if ! kns_env_pins "$chosen"; then
+        echo "kns: Environment '$chosen' has no context configured" >&2
+      elif kns_kubectl_apply_pins; then
+        kns_session_write "$owner" "$chosen"
+        if [[ "${KNS_QUIET:-}" != "1" ]]; then
+          echo "✓ kns env: $chosen → $_kns_pin_ctx${_kns_pin_ns:+ (ns: $_kns_pin_ns)}"
+        fi
+      else
+        echo "kns: failed to apply environment '$chosen' context '$_kns_pin_ctx'" >&2
       fi
     elif [[ "${KNS_QUIET:-}" != "1" ]]; then
       echo "kns: no environment selected (try: kns env)" >&2

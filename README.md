@@ -163,6 +163,13 @@ The active environment is stored for the session and lasts until you leave the d
   kns set my-cluster  # namespace is optional
   ```
 
+- `kns env …` - Select and manage named environments for a project
+  ```bash
+  kns env
+  kns env staging
+  kns env list
+  ```
+
 - `kns show` - Show merged context/namespace/pod/container from `.kns.conf`
   ```bash
   kns show
@@ -322,13 +329,13 @@ Breaking rename (no shims). Old names print a redirect hint:
 2. **Automatic switching**: When `kns.sh` is sourced, directory changes trigger a context switch:
    - **zsh**: a `chpwd` hook runs after every `cd`, `pushd`, or `popd`
    - **bash**: `cd`, `pushd`, and `popd` are wrapped to run the same logic after a successful directory change
-   - Clears any `kns use` manual override, merges `.kns.conf` files, then runs `kubectl config use-context` and sets the namespace when `KNS_CONTEXT` is set
+   - Clears any `kns use` manual override, merges `.kns.conf` files, then applies either the selected named environment or the flat `KNS_CONTEXT`/`KNS_NAMESPACE` settings
 
 3. **Manual override**: `kns use` switches kubectl immediately and writes a temporary override file. CLI commands and auto-switch honor it until you change directories (the hook clears the override and `.kns.conf` applies again).
 
-4. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
+4. **Named environments**: When `KNS_ENVS` is configured, the active environment is validated against that list and its context, namespace, pod, and container pins are used together. Mutating pod commands refuse to use an ambient kubectl context when no environment is active.
 
-5. **Pod debug**: When you set a pod with `kns pod set`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
+5. **Manual commands and pod debug**: Commands can be used manually, and shortcuts apply the resolved context before kubectl. Pod pins are stored in `.kns.conf`; `kns exec`, `kns cp`, and `kns sh` use the resolved pod and container.
 
 ## Security
 
@@ -340,9 +347,15 @@ Breaking rename (no shims). Old names print a redirect hint:
 
 You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is merged like project `.kns.conf` files (parent → child; child wins). If your current path is under `$HOME`, the home file is included only once.
 
-### Manual override directory
+### Runtime configuration directory
 
-`kns use` stores its temporary override in `$KNS_CONFIG_DIR/manual_override` (default: `~/.kns/manual_override`). `KNS_CONFIG_DIR` is only for this override file—not a general global config store:
+`KNS_CONFIG_DIR` (default: `~/.kns`) stores runtime and global state:
+
+- `manual_override` — the temporary context selected by `kns use`
+- `active_env` — the active named-environment session
+- `config` — global settings such as `prompt_on_enter`
+
+To use another location:
 
 ```bash
 export KNS_CONFIG_DIR="$HOME/.config/kns"
