@@ -11,6 +11,14 @@ KNS_LOCAL_FILE=".kns.conf"
 # Ensure config directory exists
 mkdir -p "$KNS_CONFIG_DIR"
 
+# Old command names: print redirect and exit (breaking rename pass).
+_kns_removed_hint() {
+  local old="$1"
+  local new="$2"
+  echo "Error: 'kns ${old}' was removed. Use 'kns ${new}' instead." >&2
+  exit 1
+}
+
 # Main command dispatcher
 main() {
   local cmd="${1:-help}"
@@ -20,8 +28,8 @@ main() {
     set)
       cmd_set "$@"
       ;;
-    current)
-      cmd_current "$@"
+    show)
+      cmd_show "$@"
       ;;
     use)
       cmd_use "$@"
@@ -29,11 +37,17 @@ main() {
     list)
       cmd_list "$@"
       ;;
+    unset)
+      cmd_unset "$@"
+      ;;
+    current)
+      _kns_removed_hint "current" "show"
+      ;;
     link)
-      cmd_link "$@"
+      _kns_removed_hint "link …" "set …"
       ;;
     unlink)
-      cmd_unlink "$@"
+      _kns_removed_hint "unlink" "unset"
       ;;
     gp|gs|gd|ns)
       cmd_kubectl "$cmd" "$@"
@@ -168,7 +182,7 @@ cmd_set() {
 }
 
 # Get current context
-cmd_current() {
+cmd_show() {
   # Check for manual override first
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   if [[ -f "$manual_override_file" ]]; then
@@ -264,25 +278,12 @@ cmd_list() {
   done
 }
 
-# Link current directory to context
-cmd_link() {
-  local context="${1:-}"
-  local namespace="${2:-}"
-
-  if [[ -z "$context" ]]; then
-    echo "Usage: kns link <context> [namespace]" >&2
-    exit 1
-  fi
-
-  cmd_set "$context" "$namespace"
-}
-
-# Unlink current directory
-cmd_unlink() {
+# Unset current directory config
+cmd_unset() {
   local file="$PWD/$KNS_LOCAL_FILE"
   if [[ -f "$file" ]]; then
     rm "$file"
-    echo "Unlinked context from $(pwd)"
+    echo "Removed .kns.conf from $(pwd)"
   else
     echo "No .kns.conf file found in current directory"
     exit 1
