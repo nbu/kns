@@ -166,6 +166,33 @@ main() {
     fi
   fi
   
+  # Shell completions
+  if [[ -x "$INSTALL_DIR/kns" ]]; then
+    if [[ -t 0 ]]; then
+      echo ""
+      echo -n "Install shell completions? [Y/n] "
+      local _kns_comp_ans=""
+      read -r _kns_comp_ans || true
+      case "${_kns_comp_ans:-Y}" in
+        n|N|no|No)
+          echo "Skipping completions. Later: kns completion install"
+          ;;
+        *)
+          echo -n "Completion mode: (1) static  (2) live  [1] "
+          local _kns_mode_ans=""
+          read -r _kns_mode_ans || true
+          local _kns_mode=static
+          case "${_kns_mode_ans:-1}" in
+            2|live) _kns_mode=live ;;
+          esac
+          "$INSTALL_DIR/kns" completion install --mode "$_kns_mode" || true
+          ;;
+      esac
+    else
+      "$INSTALL_DIR/kns" completion install --mode static || true
+    fi
+  fi
+
   echo ""
   info "✓ Installation complete!"
   echo ""
