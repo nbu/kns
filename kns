@@ -202,7 +202,7 @@ cmd_set() {
   cmd_use "$context" "$namespace"
 }
 
-# Get current context
+# Show merged kns config
 cmd_show() {
   # Check for manual override first
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"

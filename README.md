@@ -10,7 +10,7 @@ A bash/zsh tool that automatically switches kubectl context and namespace based 
 - 📁 **Directory-based configuration** - Uses `.kns.conf` files (similar to asdf's `.tool-versions`)
 - 🔄 **Parent directory lookup** - Finds and merges `.kns.conf` from current and parent directories
 - ⚡ **Quick kubectl shortcuts** - Fast access to common kubectl commands
-- 🐳 **Pod & Container management** - Set current pod/container per directory for easy access
+- 🐳 **Pod debug** - Set current pod/container per directory for easy access
 - 🐚 **Bash & Zsh compatible** - Works on both shells
 
 ## Installation
@@ -255,7 +255,7 @@ Breaking rename (no shims). Old names print a redirect hint:
 
 4. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
 
-5. **Pod/Container management**: When you set a pod with `kns pod set`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
+5. **Pod debug**: When you set a pod with `kns pod set`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
 
 ## Security
 
