@@ -1609,7 +1609,7 @@ cmd_shell() {
 # --- Shell completion -------------------------------------------------------
 
 _kns_top_commands() {
-  printf '%s\n' set show use list unset pods svc deploy namespaces pod container containers exec cp sh help completion
+  printf '%s\n' set show use list unset env pods svc deploy namespaces pod container containers exec cp sh help completion
 }
 
 _kns_resolve_active() {
@@ -1641,6 +1641,14 @@ _kns_complete_live() {
         _kns_kubectl_complete config get-contexts -o name
       elif [[ $n -eq 3 ]]; then
         local ctx="${words[1]}"
+        _kns_kubectl_complete --context="$ctx" get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+      fi
+      ;;
+    env)
+      if [[ $n -eq 4 && "${words[1]}" == "add" ]]; then
+        _kns_kubectl_complete config get-contexts -o name
+      elif [[ $n -eq 5 && "${words[1]}" == "add" ]]; then
+        local ctx="${words[3]}"
         _kns_kubectl_complete --context="$ctx" get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
       fi
       ;;
@@ -1699,6 +1707,19 @@ cmd___complete() {
         printf '%s\n' bash zsh install uninstall mode
       elif [[ $n -eq 3 && "${words[1]}" == "mode" ]]; then
         printf '%s\n' static live
+      fi
+      ;;
+    env)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' list show add remove default prompt
+        if _kns_source_merged_conf && _kns_is_multi_env; then
+          # shellcheck disable=SC2086
+          printf '%s\n' $KNS_ENVS
+        fi
+      elif [[ $n -eq 3 && "${words[1]}" == "prompt" ]]; then
+        printf '%s\n' on off global
+      elif [[ $n -eq 4 && "${words[1]}" == "prompt" && "${words[2]}" == "global" ]]; then
+        printf '%s\n' on off
       fi
       ;;
   esac
@@ -1962,6 +1983,7 @@ CORE (directory → context):
     use <context> [namespace]    Switch context now; override until next directory change
     list                         List all available kubectl contexts
     unset                        Remove .kns.conf from current directory (all local settings)
+    env …                        Named environments (list/show/add/remove/default/prompt; kns env <name>)
     completion …                 Shell completions (see: kns completion help)
 
 KUBECTL SHORTCUTS:
@@ -2005,6 +2027,16 @@ CONFIGURATION:
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
+
+    Named environments (multi-env): when KNS_ENVS is set, flat KNS_CONTEXT /
+    KNS_NAMESPACE keys in the same merge are ignored. Per-environment keys:
+      - KNS_ENVS: space-separated environment names
+      - KNS_DEFAULT_ENV: default environment on enter
+      - KNS_PROMPT_ON_ENTER: 1/0 — prompt to pick env when entering the tree
+      - KNS_ENV_<name>_CONTEXT, KNS_ENV_<name>_NAMESPACE (and optional _POD, _CONTAINER)
+
+    'kns unset' removes the whole local .kns.conf file, including all named
+    environments defined there.
 
     .kns.conf files are sourced as shell code—only use trusted directories.
 

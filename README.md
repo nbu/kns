@@ -114,6 +114,45 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
 - Current directory can have `KNS_POD` and `KNS_CONTAINER`
 - Values are automatically merged when found
 
+### Named environments
+
+A directory can define multiple named Kubernetes environments instead of a single flat context. Set `KNS_ENVS` and per-environment keys in `.kns.conf`:
+
+```bash
+# .kns.conf — multi-env example
+KNS_ENVS="staging production"
+KNS_DEFAULT_ENV="staging"
+KNS_PROMPT_ON_ENTER=1
+
+KNS_ENV_staging_CONTEXT="staging-cluster"
+KNS_ENV_staging_NAMESPACE="staging"
+
+KNS_ENV_production_CONTEXT="production-cluster"
+KNS_ENV_production_NAMESPACE="production"
+```
+
+When you `cd` into the tree, kns applies the default environment or prompts you to pick one (prompt on enter is **on** by default). Control prompting with:
+
+```bash
+kns env prompt          # show effective / project / global prompt setting
+kns env prompt on|off   # per-project default
+kns env prompt global on|off   # global default (~/.kns/config)
+```
+
+Switch and manage environments:
+
+```bash
+kns env                 # interactive pick (TTY)
+kns env staging         # switch to named environment
+kns env list            # list environments (* = active, default marked)
+kns env show [name]     # show env details
+kns env default [name]  # get or set default
+kns env add <name> <context> [namespace]
+kns env remove <name>
+```
+
+The active environment is stored for the session and lasts until you leave the directory tree (or the session is cleared). `kns set` is refused when `KNS_ENVS` is configured — use `kns env add` instead.
+
 ### Commands
 
 #### Core (directory → context)
