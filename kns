@@ -200,6 +200,13 @@ _kns_valid_env_name() {
   [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
+_kns_reserved_env_name() {
+  case "$1" in
+    list|show|add|remove|default|prompt) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _kns_env_pins() {
   local name="$1"
   local ctx_var ns_var pod_var ctr_var
@@ -436,7 +443,7 @@ _kns_unknown_env() {
 }
 
 _kns_pick_env() {
-  if [[ ! -t 0 || ! -t 1 ]]; then
+  if [[ ! -t 0 ]]; then
     return 1
   fi
   local -a envs=()
@@ -585,6 +592,10 @@ cmd_env_add() {
   local name="$1" context="$2" namespace="${3:-}"
   if ! _kns_valid_env_name "$name"; then
     echo "Error: Invalid environment name '$name'. Use letters, digits, and underscores; the first character cannot be a digit." >&2
+    return 1
+  fi
+  if _kns_reserved_env_name "$name"; then
+    echo "Error: Environment name '$name' is reserved for a 'kns env' subcommand." >&2
     return 1
   fi
   _kns_source_merged_conf || true
