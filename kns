@@ -64,14 +64,23 @@ main() {
     ns)
       _kns_removed_hint "ns" "namespaces"
       ;;
+    pod)
+      cmd_pod "$@"
+      ;;
+    container)
+      cmd_container "$@"
+      ;;
+    containers)
+      cmd_get_containers "$@"
+      ;;
     sp)
-      cmd_set_pod "$@"
+      _kns_removed_hint "sp" "pod set"
       ;;
     sc)
-      cmd_set_container "$@"
+      _kns_removed_hint "sc" "container set"
       ;;
     gc)
-      cmd_get_containers "$@"
+      _kns_removed_hint "gc" "containers"
       ;;
     exec)
       cmd_exec "$@"
@@ -326,6 +335,34 @@ cmd_kubectl() {
   esac
 }
 
+cmd_pod() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_pod "$@"
+      ;;
+    *)
+      echo "Usage: kns pod set <pod-name>" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cmd_container() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_container "$@"
+      ;;
+    *)
+      echo "Usage: kns container set <container-name>" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # Auto-switch context based on current directory
 auto_switch_context() {
   # Check for manual override from 'kns use' command (stored in file)
@@ -362,7 +399,7 @@ cmd_set_pod() {
   local pod="${1:-}"
 
   if [[ -z "$pod" ]]; then
-    echo "Usage: kns sp <pod-name>" >&2
+    echo "Usage: kns pod set <pod-name>" >&2
     exit 1
   fi
 
@@ -411,7 +448,7 @@ cmd_set_container() {
   local container="${1:-}"
 
   if [[ -z "$container" ]]; then
-    echo "Usage: kns sc <container-name>" >&2
+    echo "Usage: kns container set <container-name>" >&2
     exit 1
   fi
 
@@ -429,7 +466,7 @@ cmd_set_container() {
   fi
   
   if [[ -z "$existing_pod" ]]; then
-    echo "Error: Pod must be set first. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Pod must be set first. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -482,7 +519,7 @@ cmd_get_containers() {
   fi
 
   if [[ -z "${KNS_POD:-}" ]]; then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -527,7 +564,7 @@ get_current_pod_container() {
 cmd_exec() {
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -610,7 +647,7 @@ cmd_copy() {
   local dest="$2"
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -654,7 +691,7 @@ cmd_copy() {
 cmd_shell() {
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
