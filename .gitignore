@@ -1,6 +1,9 @@
 # kns configuration files (project-specific)
 .kns.conf
 
+# Local agent/planning docs (keep on disk, not in repo)
+docs/superpowers/
+
 # Editor files
 *.swp
 *.swo
