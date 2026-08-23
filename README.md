@@ -166,9 +166,20 @@ All shortcuts automatically switch context based on `.kns.conf` before executing
   kns pod set my-pod-123
   ```
 
+- `kns pod unset [-c]` - Remove local pod pin (`-c` also removes container)
+  ```bash
+  kns pod unset
+  kns pod unset -c
+  ```
+
 - `kns container set <container-name>` - Set current container (requires pod)
   ```bash
   kns container set my-container
+  ```
+
+- `kns container unset` - Remove local container pin (keeps pod)
+  ```bash
+  kns container unset
   ```
 
 - `kns containers` - List containers of current pod
