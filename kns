@@ -785,24 +785,23 @@ Similar to how asdf uses .tool-versions files, kns uses .kns.conf files.
 USAGE:
     kns <command> [arguments]
 
-CONTEXT MANAGEMENT:
+CORE (directory → context):
     set <context> [namespace]    Set context for current directory
-    current                     Show current context/namespace and source file
+    show                         Show merged context/namespace/pod/container and sources
     use <context> [namespace]    Switch context now; override until next directory change
     list                         List all available kubectl contexts
-    link <context> [namespace]   Alias for 'set'
-    unlink                       Remove .kns.conf from current directory (all local settings)
+    unset                        Remove .kns.conf from current directory (all local settings)
 
 KUBECTL SHORTCUTS:
-    gp                           kubectl get pods
-    gs                           kubectl get services
-    gd                           kubectl get deployments
-    ns                           kubectl get namespaces
+    pods                         kubectl get pods
+    svc                          kubectl get services
+    deploy                       kubectl get deployments
+    namespaces                   kubectl get namespaces
 
-POD & CONTAINER MANAGEMENT:
-    sp <pod-name>                Set current pod for this directory
-    sc <container-name>          Set current container (requires pod to be set first)
-    gc                           List containers of current pod
+POD DEBUG:
+    pod set <pod-name>           Set current pod for this directory
+    container set <name>         Set current container (requires pod)
+    containers                   List containers of current pod
     exec <command> [args...]     Execute command in current pod/container
     cp <source> <dest>           Copy files to/from pod (use 'pod:' prefix for pod paths)
     sh                           Interactive shell into current pod/container
@@ -810,43 +809,35 @@ POD & CONTAINER MANAGEMENT:
     help, -h, --help             Show this help message
 
 EXAMPLES:
-    # Context management
     kns set production-cluster production
-    kns current                                # Shows context and source file
-    kns use staging-cluster staging            # Override until next cd
-    kns list                                   # List all contexts
-    kns unlink                                 # Remove local .kns.conf
-    
-    # Quick kubectl commands
-    kns gp                                     # Get pods
-    kns gs                                     # Get services
-    
-    # Pod and container management
-    kns sp my-pod-123                          # Set current pod
-    kns sc my-container                        # Set current container
-    kns gc                                     # List containers in current pod
-    kns exec ls -la /tmp                       # Execute command
-    kns cp local.txt pod:/tmp/file.txt         # Copy to pod
-    kns cp pod:/tmp/file.txt local.txt        # Copy from pod
-    kns sh                                     # Interactive shell
+    kns show
+    kns use staging-cluster staging
+    kns pods
+    kns pod set my-pod-123
+    kns container set app
+    kns containers
+    kns exec ls -la /tmp
+    kns cp local.txt pod:/tmp/file.txt
+    kns sh
+    kns unset
 
 CONFIGURATION:
     Settings live in .kns.conf files. kns walks from \$PWD up to / and merges
     every file found (parent → child; child wins). ~/.kns.conf is included when
     present and not already in the walk.
-    
+
     Each .kns.conf can set:
       - KNS_CONTEXT: Kubernetes context name
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
-    
+
     .kns.conf files are sourced as shell code—only use trusted directories.
-    
+
     Automatic switching requires sourcing kns.sh (zsh: chpwd hook; bash: cd/pushd/popd).
     'kns use' writes a temporary override cleared on the next directory change.
     Override file: \$KNS_CONFIG_DIR/manual_override (default ~/.kns/manual_override).
-    
+
     For file copy operations, use 'pod:' prefix to indicate pod paths:
       - kns cp local.txt pod:/tmp/file.txt     (copy to pod)
       - kns cp pod:/tmp/file.txt local.txt     (copy from pod)
