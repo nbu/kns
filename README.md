@@ -10,7 +10,7 @@ A bash/zsh tool that automatically switches kubectl context and namespace based 
 - 📁 **Directory-based configuration** - Uses `.kns.conf` files (similar to asdf's `.tool-versions`)
 - 🔄 **Parent directory lookup** - Finds and merges `.kns.conf` from current and parent directories
 - ⚡ **Quick kubectl shortcuts** - Fast access to common kubectl commands
-- 🐳 **Pod & Container management** - Set current pod/container per directory for easy access
+- 🐳 **Pod debug** - Set current pod/container per directory for easy access
 - 🐚 **Bash & Zsh compatible** - Works on both shells
 
 ## Installation
@@ -93,7 +93,7 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
 
 ### Commands
 
-#### Context Management
+#### Core (directory → context)
 
 - `kns set <context> [namespace]` - Set context for current directory
   ```bash
@@ -101,9 +101,9 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   kns set my-cluster  # namespace is optional
   ```
 
-- `kns current` - Show current context/namespace/pod/container from `.kns.conf`
+- `kns show` - Show merged context/namespace/pod/container from `.kns.conf`
   ```bash
-  kns current
+  kns show
   # Output:
   # Source: /path/to/.kns.conf
   # Context: production-cluster
@@ -122,40 +122,35 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   kns list
   ```
 
-- `kns link <context> [namespace]` - Alias for `set`
+- `kns unset` - Remove `.kns.conf` from the current directory (all local kns settings)
   ```bash
-  kns link production-cluster production
+  kns unset
   ```
 
-- `kns unlink` - Remove `.kns.conf` from the current directory (all local kns settings: context, namespace, pod, container)
-  ```bash
-  kns unlink
-  ```
+#### Kubectl Shortcuts
 
-#### Quick kubectl Shortcuts
-
-- `kns gp` - `kubectl get pods`
-- `kns gs` - `kubectl get services`
-- `kns gd` - `kubectl get deployments`
-- `kns ns` - `kubectl get namespaces`
+- `kns pods` - `kubectl get pods`
+- `kns svc` - `kubectl get services`
+- `kns deploy` - `kubectl get deployments`
+- `kns namespaces` - `kubectl get namespaces`
 
 All shortcuts automatically switch context based on `.kns.conf` before executing.
 
-#### Pod & Container Management
+#### Pod Debug
 
-- `kns sp <pod-name>` - Set current pod for this directory
+- `kns pod set <pod-name>` - Set current pod for this directory
   ```bash
-  kns sp my-pod-123
+  kns pod set my-pod-123
   ```
 
-- `kns sc <container-name>` - Set current container (requires pod to be set first)
+- `kns container set <container-name>` - Set current container (requires pod)
   ```bash
-  kns sc my-container
+  kns container set my-container
   ```
 
-- `kns gc` - List containers of current pod
+- `kns containers` - List containers of current pod
   ```bash
-  kns gc
+  kns containers
   # Output:
   # Pod: my-pod-123
   # Containers:
@@ -192,13 +187,13 @@ cd ~/projects/my-app/src
 # ✓ Switched to context: production-cluster (namespace: production)
 
 # Use kubectl shortcuts
-kns gp
-kns gs
+kns pods
+kns svc
 
 # Set up pod and container for this directory
-kns sp my-pod-123
-kns sc app-container
-kns gc                              # List containers
+kns pod set my-pod-123
+kns container set app-container
+kns containers                      # List containers
 
 # Work with the pod
 kns exec ls -la /tmp
@@ -209,7 +204,7 @@ kns sh                              # Interactive shell
 kns use staging-cluster staging
 
 # Remove local .kns.conf
-kns unlink
+kns unset
 ```
 
 ### Advanced: Merged Configuration
@@ -230,6 +225,23 @@ KNS_CONTAINER="nginx"
 # - Pod/container from current directory
 ```
 
+### Migration from previous command names
+
+Breaking rename (no shims). Old names print a redirect hint:
+
+| Old | New |
+|-----|-----|
+| `kns current` | `kns show` |
+| `kns unlink` | `kns unset` |
+| `kns link …` | `kns set …` |
+| `kns gp` | `kns pods` |
+| `kns gs` | `kns svc` |
+| `kns gd` | `kns deploy` |
+| `kns ns` | `kns namespaces` |
+| `kns sp` | `kns pod set` |
+| `kns sc` | `kns container set` |
+| `kns gc` | `kns containers` |
+
 ## How it works
 
 1. **Configuration files**: `kns` looks for `.kns.conf` files walking up from the current directory to `/`, and also checks `~/.kns.conf` (unless it was already found in the walk). Files are sourced farthest-parent to closest-child so nearer directories override parent values.
@@ -243,7 +255,7 @@ KNS_CONTAINER="nginx"
 
 4. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
 
-5. **Pod/Container management**: When you set a pod with `kns sp`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
+5. **Pod debug**: When you set a pod with `kns pod set`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
 
 ## Security
 
@@ -292,14 +304,14 @@ INSTALL_DIR=/usr/local/bin ./install.sh
 - Make sure you've sourced `kns.sh` in your shell rc file
 - Check that `.kns.conf` exists in the directory (or parent directory)
 - Verify the file contains `KNS_CONTEXT` variable
-- Try running `kns current` to see if the file is detected and what values are being used
+- Try running `kns show` to see if the file is detected and what values are being used
 
 ### Pod/Container not found
 
-- Make sure you've set the pod with `kns sp <pod-name>`
+- Make sure you've set the pod with `kns pod set <pod-name>`
 - Verify the pod exists: `kubectl get pod <pod-name>`
 - Check that you're in the correct context/namespace
-- Run `kns current` to see current configuration
+- Run `kns show` to see current configuration
 
 ### Command not found in container
 

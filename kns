@@ -11,6 +11,14 @@ KNS_LOCAL_FILE=".kns.conf"
 # Ensure config directory exists
 mkdir -p "$KNS_CONFIG_DIR"
 
+# Old command names: print redirect and exit (breaking rename pass).
+_kns_removed_hint() {
+  local old="$1"
+  local new="$2"
+  echo "Error: 'kns ${old}' was removed. Use 'kns ${new}' instead." >&2
+  exit 1
+}
+
 # Main command dispatcher
 main() {
   local cmd="${1:-help}"
@@ -20,8 +28,8 @@ main() {
     set)
       cmd_set "$@"
       ;;
-    current)
-      cmd_current "$@"
+    show)
+      cmd_show "$@"
       ;;
     use)
       cmd_use "$@"
@@ -29,23 +37,50 @@ main() {
     list)
       cmd_list "$@"
       ;;
+    unset)
+      cmd_unset "$@"
+      ;;
+    current)
+      _kns_removed_hint "current" "show"
+      ;;
     link)
-      cmd_link "$@"
+      _kns_removed_hint "link …" "set …"
       ;;
     unlink)
-      cmd_unlink "$@"
+      _kns_removed_hint "unlink" "unset"
       ;;
-    gp|gs|gd|ns)
+    pods|svc|deploy|namespaces)
       cmd_kubectl "$cmd" "$@"
       ;;
+    gp)
+      _kns_removed_hint "gp" "pods"
+      ;;
+    gs)
+      _kns_removed_hint "gs" "svc"
+      ;;
+    gd)
+      _kns_removed_hint "gd" "deploy"
+      ;;
+    ns)
+      _kns_removed_hint "ns" "namespaces"
+      ;;
+    pod)
+      cmd_pod "$@"
+      ;;
+    container)
+      cmd_container "$@"
+      ;;
+    containers)
+      cmd_get_containers "$@"
+      ;;
     sp)
-      cmd_set_pod "$@"
+      _kns_removed_hint "sp" "pod set"
       ;;
     sc)
-      cmd_set_container "$@"
+      _kns_removed_hint "sc" "container set"
       ;;
     gc)
-      cmd_get_containers "$@"
+      _kns_removed_hint "gc" "containers"
       ;;
     exec)
       cmd_exec "$@"
@@ -167,8 +202,8 @@ cmd_set() {
   cmd_use "$context" "$namespace"
 }
 
-# Get current context
-cmd_current() {
+# Show merged kns config
+cmd_show() {
   # Check for manual override first
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   if [[ -f "$manual_override_file" ]]; then
@@ -264,25 +299,12 @@ cmd_list() {
   done
 }
 
-# Link current directory to context
-cmd_link() {
-  local context="${1:-}"
-  local namespace="${2:-}"
-
-  if [[ -z "$context" ]]; then
-    echo "Usage: kns link <context> [namespace]" >&2
-    exit 1
-  fi
-
-  cmd_set "$context" "$namespace"
-}
-
-# Unlink current directory
-cmd_unlink() {
+# Unset current directory config
+cmd_unset() {
   local file="$PWD/$KNS_LOCAL_FILE"
   if [[ -f "$file" ]]; then
     rm "$file"
-    echo "Unlinked context from $(pwd)"
+    echo "Removed .kns.conf from $(pwd)"
   else
     echo "No .kns.conf file found in current directory"
     exit 1
@@ -298,17 +320,45 @@ cmd_kubectl() {
   auto_switch_context
 
   case "$cmd" in
-    gp)
+    pods)
       kubectl get pods "$@"
       ;;
-    gs)
+    svc)
       kubectl get services "$@"
       ;;
-    gd)
+    deploy)
       kubectl get deployments "$@"
       ;;
-    ns)
+    namespaces)
       kubectl get namespaces "$@"
+      ;;
+  esac
+}
+
+cmd_pod() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_pod "$@"
+      ;;
+    *)
+      echo "Usage: kns pod set <pod-name>" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cmd_container() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_container "$@"
+      ;;
+    *)
+      echo "Usage: kns container set <container-name>" >&2
+      exit 1
       ;;
   esac
 }
@@ -349,7 +399,7 @@ cmd_set_pod() {
   local pod="${1:-}"
 
   if [[ -z "$pod" ]]; then
-    echo "Usage: kns sp <pod-name>" >&2
+    echo "Usage: kns pod set <pod-name>" >&2
     exit 1
   fi
 
@@ -398,7 +448,7 @@ cmd_set_container() {
   local container="${1:-}"
 
   if [[ -z "$container" ]]; then
-    echo "Usage: kns sc <container-name>" >&2
+    echo "Usage: kns container set <container-name>" >&2
     exit 1
   fi
 
@@ -416,7 +466,7 @@ cmd_set_container() {
   fi
   
   if [[ -z "$existing_pod" ]]; then
-    echo "Error: Pod must be set first. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Pod must be set first. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -469,7 +519,7 @@ cmd_get_containers() {
   fi
 
   if [[ -z "${KNS_POD:-}" ]]; then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -514,7 +564,7 @@ get_current_pod_container() {
 cmd_exec() {
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -597,7 +647,7 @@ cmd_copy() {
   local dest="$2"
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -641,7 +691,7 @@ cmd_copy() {
 cmd_shell() {
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
-    echo "Error: Current pod not set. Use 'kns sp <pod-name>' to set it." >&2
+    echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
   
@@ -735,24 +785,23 @@ Similar to how asdf uses .tool-versions files, kns uses .kns.conf files.
 USAGE:
     kns <command> [arguments]
 
-CONTEXT MANAGEMENT:
+CORE (directory → context):
     set <context> [namespace]    Set context for current directory
-    current                     Show current context/namespace and source file
+    show                         Show merged context/namespace/pod/container and sources
     use <context> [namespace]    Switch context now; override until next directory change
     list                         List all available kubectl contexts
-    link <context> [namespace]   Alias for 'set'
-    unlink                       Remove .kns.conf from current directory (all local settings)
+    unset                        Remove .kns.conf from current directory (all local settings)
 
 KUBECTL SHORTCUTS:
-    gp                           kubectl get pods
-    gs                           kubectl get services
-    gd                           kubectl get deployments
-    ns                           kubectl get namespaces
+    pods                         kubectl get pods
+    svc                          kubectl get services
+    deploy                       kubectl get deployments
+    namespaces                   kubectl get namespaces
 
-POD & CONTAINER MANAGEMENT:
-    sp <pod-name>                Set current pod for this directory
-    sc <container-name>          Set current container (requires pod to be set first)
-    gc                           List containers of current pod
+POD DEBUG:
+    pod set <pod-name>           Set current pod for this directory
+    container set <name>         Set current container (requires pod)
+    containers                   List containers of current pod
     exec <command> [args...]     Execute command in current pod/container
     cp <source> <dest>           Copy files to/from pod (use 'pod:' prefix for pod paths)
     sh                           Interactive shell into current pod/container
@@ -760,43 +809,35 @@ POD & CONTAINER MANAGEMENT:
     help, -h, --help             Show this help message
 
 EXAMPLES:
-    # Context management
     kns set production-cluster production
-    kns current                                # Shows context and source file
-    kns use staging-cluster staging            # Override until next cd
-    kns list                                   # List all contexts
-    kns unlink                                 # Remove local .kns.conf
-    
-    # Quick kubectl commands
-    kns gp                                     # Get pods
-    kns gs                                     # Get services
-    
-    # Pod and container management
-    kns sp my-pod-123                          # Set current pod
-    kns sc my-container                        # Set current container
-    kns gc                                     # List containers in current pod
-    kns exec ls -la /tmp                       # Execute command
-    kns cp local.txt pod:/tmp/file.txt         # Copy to pod
-    kns cp pod:/tmp/file.txt local.txt        # Copy from pod
-    kns sh                                     # Interactive shell
+    kns show
+    kns use staging-cluster staging
+    kns pods
+    kns pod set my-pod-123
+    kns container set app
+    kns containers
+    kns exec ls -la /tmp
+    kns cp local.txt pod:/tmp/file.txt
+    kns sh
+    kns unset
 
 CONFIGURATION:
     Settings live in .kns.conf files. kns walks from \$PWD up to / and merges
     every file found (parent → child; child wins). ~/.kns.conf is included when
     present and not already in the walk.
-    
+
     Each .kns.conf can set:
       - KNS_CONTEXT: Kubernetes context name
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
-    
+
     .kns.conf files are sourced as shell code—only use trusted directories.
-    
+
     Automatic switching requires sourcing kns.sh (zsh: chpwd hook; bash: cd/pushd/popd).
     'kns use' writes a temporary override cleared on the next directory change.
     Override file: \$KNS_CONFIG_DIR/manual_override (default ~/.kns/manual_override).
-    
+
     For file copy operations, use 'pod:' prefix to indicate pod paths:
       - kns cp local.txt pod:/tmp/file.txt     (copy to pod)
       - kns cp pod:/tmp/file.txt local.txt     (copy from pod)
