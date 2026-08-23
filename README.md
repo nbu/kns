@@ -208,7 +208,7 @@ kns sh                              # Interactive shell
 # Switch to different context manually
 kns use staging-cluster staging
 
-# Remove context from directory
+# Remove local .kns.conf
 kns unlink
 ```
 
@@ -235,7 +235,7 @@ KNS_CONTAINER="nginx"
 1. **Configuration files**: `kns` looks for `.kns.conf` files walking up from the current directory to `/`, and also checks `~/.kns.conf` (unless it was already found in the walk). Files are sourced farthest-parent to closest-child so nearer directories override parent values.
 
 2. **Automatic switching**: When `kns.sh` is sourced, directory changes trigger a context switch:
-   - **zsh**: an `chpwd` hook runs after every `cd`, `pushd`, or `popd`
+   - **zsh**: a `chpwd` hook runs after every `cd`, `pushd`, or `popd`
    - **bash**: `cd`, `pushd`, and `popd` are wrapped to run the same logic after a successful directory change
    - Clears any `kns use` manual override, merges `.kns.conf` files, then runs `kubectl config use-context` and sets the namespace when `KNS_CONTEXT` is set
 
