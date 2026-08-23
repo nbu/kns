@@ -39,17 +39,17 @@ bash /tmp/install-kns.sh
 ### Quick Install (From Git)
 
 ```bash
-git clone <repository-url>
-cd k
+git clone https://github.com/nbu/kns.git
+cd kns
 ./install.sh
 source ~/.bashrc  # or ~/.zshrc
 ```
 
 ### Manual Install
 
-1. Copy the `kns` script to a directory in your PATH:
+1. Copy the `kns` and `kns.sh` scripts to a directory in your PATH:
    ```bash
-   cp kns ~/.local/bin/kns
+   cp kns kns.sh ~/.local/bin/
    chmod +x ~/.local/bin/kns
    ```
 
@@ -58,6 +58,8 @@ source ~/.bashrc  # or ~/.zshrc
    export PATH="$HOME/.local/bin:$PATH"
    source ~/.local/bin/kns.sh
    ```
+
+   Adding `kns` to PATH alone gives you the CLI only. Sourcing `kns.sh` is required for automatic context switching when you change directories (zsh: `chpwd` hook; bash: wraps `cd`, `pushd`, and `popd`).
 
 3. Reload your shell:
    ```bash
@@ -110,7 +112,7 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   # Container: app
   ```
 
-- `kns use <context> [namespace]` - Manually switch context
+- `kns use <context> [namespace]` - Switch context now; override persists until the next directory change
   ```bash
   kns use staging-cluster staging
   ```
@@ -125,7 +127,7 @@ Now, whenever you `cd` into this directory (or any subdirectory), the context wi
   kns link production-cluster production
   ```
 
-- `kns unlink` - Remove context from current directory
+- `kns unlink` - Remove `.kns.conf` from the current directory (all local kns settings: context, namespace, pod, container)
   ```bash
   kns unlink
   ```
@@ -230,18 +232,36 @@ KNS_CONTAINER="nginx"
 
 ## How it works
 
-1. **Configuration files**: `kns` looks for `.kns.conf` files in the current directory and parent directories (similar to how `asdf` finds `.tool-versions`). It merges values from all found files, with current directory values taking precedence.
+1. **Configuration files**: `kns` looks for `.kns.conf` files walking up from the current directory to `/`, and also checks `~/.kns.conf` (unless it was already found in the walk). Files are sourced farthest-parent to closest-child so nearer directories override parent values.
 
-2. **Automatic switching**: The shell integration hooks into the `cd` command. When you change directories, it:
-   - Searches for `.kns.conf` in the current and parent directories
-   - Sources all found files to get `KNS_CONTEXT`, `KNS_NAMESPACE`, `KNS_POD`, and `KNS_CONTAINER`
-   - Automatically runs `kubectl config use-context` and sets the namespace
+2. **Automatic switching**: When `kns.sh` is sourced, directory changes trigger a context switch:
+   - **zsh**: an `chpwd` hook runs after every `cd`, `pushd`, or `popd`
+   - **bash**: `cd`, `pushd`, and `popd` are wrapped to run the same logic after a successful directory change
+   - Clears any `kns use` manual override, merges `.kns.conf` files, then runs `kubectl config use-context` and sets the namespace when `KNS_CONTEXT` is set
 
-3. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
+3. **Manual override**: `kns use` switches kubectl immediately and writes a temporary override file. CLI commands and auto-switch honor it until you change directories (the hook clears the override and `.kns.conf` applies again).
 
-4. **Pod/Container management**: When you set a pod with `kns sp`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
+4. **Manual commands**: All `kns` commands can be used manually, and shortcuts automatically apply the context before running kubectl commands.
+
+5. **Pod/Container management**: When you set a pod with `kns sp`, it's stored in the local `.kns.conf` file. Commands like `kns exec`, `kns cp`, and `kns sh` automatically use the current pod and container from the configuration.
+
+## Security
+
+`.kns.conf` files are **sourced as shell code** (not parsed as data). Only use `.kns.conf` files in directories you trust, and do not commit untrusted config into your projects.
 
 ## Configuration
+
+### Home directory config
+
+You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is merged like project `.kns.conf` files (parent → child; child wins). If your current path is under `$HOME`, the home file is included only once.
+
+### Manual override directory
+
+`kns use` stores its temporary override in `$KNS_CONFIG_DIR/manual_override` (default: `~/.kns/manual_override`). `KNS_CONFIG_DIR` is only for this override file—not a general global config store:
+
+```bash
+export KNS_CONFIG_DIR="$HOME/.config/kns"
+```
 
 ### Quiet Mode
 
@@ -257,14 +277,6 @@ Set `INSTALL_DIR` before running install:
 
 ```bash
 INSTALL_DIR=/usr/local/bin ./install.sh
-```
-
-### Custom Config Directory
-
-Set `KNS_CONFIG_DIR` to change where global config is stored:
-
-```bash
-export KNS_CONFIG_DIR="$HOME/.config/kns"
 ```
 
 ## Requirements

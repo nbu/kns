@@ -738,10 +738,10 @@ USAGE:
 CONTEXT MANAGEMENT:
     set <context> [namespace]    Set context for current directory
     current                     Show current context/namespace and source file
-    use <context> [namespace]    Manually switch context (temporarily overrides .kns.conf)
+    use <context> [namespace]    Switch context now; override until next directory change
     list                         List all available kubectl contexts
     link <context> [namespace]   Alias for 'set'
-    unlink                       Remove context from current directory
+    unlink                       Remove .kns.conf from current directory (all local settings)
 
 KUBECTL SHORTCUTS:
     gp                           kubectl get pods
@@ -763,9 +763,9 @@ EXAMPLES:
     # Context management
     kns set production-cluster production
     kns current                                # Shows context and source file
-    kns use staging-cluster staging            # Temporary override
+    kns use staging-cluster staging            # Override until next cd
     kns list                                   # List all contexts
-    kns unlink                                 # Remove .kns.conf
+    kns unlink                                 # Remove local .kns.conf
     
     # Quick kubectl commands
     kns gp                                     # Get pods
@@ -781,18 +781,21 @@ EXAMPLES:
     kns sh                                     # Interactive shell
 
 CONFIGURATION:
-    Configuration is stored in .kns.conf files in your project directories.
-    The tool searches for .kns.conf in the current directory and parent directories
-    (similar to asdf's .tool-versions lookup).
+    Settings live in .kns.conf files. kns walks from \$PWD up to / and merges
+    every file found (parent → child; child wins). ~/.kns.conf is included when
+    present and not already in the walk.
     
-    The .kns.conf file can contain:
+    Each .kns.conf can set:
       - KNS_CONTEXT: Kubernetes context name
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
     
-    The tool automatically switches context when you cd into a directory.
-    Pod and container settings are preserved when updating context.
+    .kns.conf files are sourced as shell code—only use trusted directories.
+    
+    Automatic switching requires sourcing kns.sh (zsh: chpwd hook; bash: cd/pushd/popd).
+    'kns use' writes a temporary override cleared on the next directory change.
+    Override file: \$KNS_CONFIG_DIR/manual_override (default ~/.kns/manual_override).
     
     For file copy operations, use 'pod:' prefix to indicate pod paths:
       - kns cp local.txt pod:/tmp/file.txt     (copy to pod)
