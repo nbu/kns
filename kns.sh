@@ -33,8 +33,200 @@ kns_collect_conf_files() {
   [[ ${#kns_conf_files[@]} -gt 0 ]]
 }
 
+kns_valid_env_name() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+kns_env_in_list() {
+  local want="$1"
+  local rest="${KNS_ENVS:-}"
+  local env
+  while [[ -n "$rest" ]]; do
+    env="${rest%% *}"
+    if [[ "$rest" == *" "* ]]; then
+      rest="${rest#* }"
+    else
+      rest=""
+    fi
+    [[ -n "$env" ]] || continue
+    [[ "$env" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+kns_env_pins() {
+  local name="$1"
+  _kns_pin_ctx=""
+  _kns_pin_ns=""
+  _kns_pin_pod=""
+  _kns_pin_container=""
+  kns_valid_env_name "$name" || return 1
+  eval "_kns_pin_ctx=\"\${KNS_ENV_${name}_CONTEXT-}\""
+  eval "_kns_pin_ns=\"\${KNS_ENV_${name}_NAMESPACE-}\""
+  eval "_kns_pin_pod=\"\${KNS_ENV_${name}_POD-}\""
+  eval "_kns_pin_container=\"\${KNS_ENV_${name}_CONTAINER-}\""
+  [[ -n "$_kns_pin_ctx" ]]
+}
+
+kns_envs_owner_dir() {
+  local f
+  local owner
+  for f in ${kns_conf_files[@]+"${kns_conf_files[@]}"}; do
+    owner=$(
+      unset KNS_ENVS
+      # shellcheck disable=SC1090
+      source "$f" 2>/dev/null || true
+      if [[ -n "${KNS_ENVS:-}" ]]; then
+        dirname "$f"
+      fi
+    )
+    if [[ -n "$owner" ]]; then
+      echo "$owner"
+      return 0
+    fi
+  done
+  return 1
+}
+
+kns_session_file() {
+  echo "${KNS_CONFIG_DIR:-$HOME/.kns}/active_env"
+}
+
+kns_session_clear() {
+  rm -f "$(kns_session_file)"
+}
+
+kns_session_write() {
+  local root="$1"
+  local env="$2"
+  local config_dir="${KNS_CONFIG_DIR:-$HOME/.kns}"
+  mkdir -p "$config_dir"
+  cat > "$config_dir/active_env" <<EOF
+KNS_SESSION_ROOT="$root"
+KNS_SESSION_ENV="$env"
+EOF
+}
+
+kns_session_read() {
+  _kns_session_root=""
+  _kns_session_env=""
+  local file
+  file=$(kns_session_file)
+  [[ -f "$file" ]] || return 1
+  local KNS_SESSION_ROOT="" KNS_SESSION_ENV=""
+  # shellcheck disable=SC1090
+  source "$file" 2>/dev/null || return 1
+  _kns_session_root="${KNS_SESSION_ROOT:-}"
+  _kns_session_env="${KNS_SESSION_ENV:-}"
+  [[ -n "$_kns_session_root" && -n "$_kns_session_env" ]]
+}
+
+kns_pwd_under_root() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
+  [[ "$PWD" == "$root" || "$PWD" == "$root"/* ]]
+}
+
+kns_global_prompt() {
+  local file="${KNS_CONFIG_DIR:-$HOME/.kns}/config"
+  local line
+  local value=""
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        prompt_on_enter=*)
+          value="${line#prompt_on_enter=}"
+          break
+          ;;
+      esac
+    done < "$file"
+  fi
+  case "$value" in
+    0|off|OFF|false|False) echo 0 ;;
+    1|on|ON|true|True) echo 1 ;;
+    *) echo 1 ;;
+  esac
+}
+
+kns_effective_prompt() {
+  local prompt="${KNS_PROMPT_ON_ENTER-}"
+  if [[ -n "$prompt" ]]; then
+    case "$prompt" in
+      0|off|OFF) echo 0 ;;
+      *) echo 1 ;;
+    esac
+    return 0
+  fi
+  kns_global_prompt
+}
+
+kns_pick_env() {
+  [[ -t 0 ]] || return 1
+  local rest="${KNS_ENVS:-}"
+  local env
+  local count=0
+  local default_index=""
+  echo "Select kns environment:" >&2
+  while [[ -n "$rest" ]]; do
+    env="${rest%% *}"
+    if [[ "$rest" == *" "* ]]; then
+      rest="${rest#* }"
+    else
+      rest=""
+    fi
+    [[ -n "$env" ]] || continue
+    count=$((count + 1))
+    if [[ "$env" == "${KNS_DEFAULT_ENV:-}" ]]; then
+      default_index="$count"
+      printf '  %d) %s (default)\n' "$count" "$env" >&2
+    else
+      printf '  %d) %s\n' "$count" "$env" >&2
+    fi
+  done
+  [[ $count -gt 0 ]] || return 1
+
+  local choice=""
+  if [[ -n "$default_index" ]]; then
+    printf 'Choice [%s]: ' "$default_index" >&2
+  else
+    printf 'Choice: ' >&2
+  fi
+  IFS= read -r choice || return 1
+  [[ -z "$choice" && -n "$default_index" ]] && choice="$default_index"
+  [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+  [[ $choice -ge 1 && $choice -le $count ]] || return 1
+
+  local index=0
+  rest="${KNS_ENVS:-}"
+  while [[ -n "$rest" ]]; do
+    env="${rest%% *}"
+    if [[ "$rest" == *" "* ]]; then
+      rest="${rest#* }"
+    else
+      rest=""
+    fi
+    [[ -n "$env" ]] || continue
+    index=$((index + 1))
+    if [[ $index -eq $choice ]]; then
+      echo "$env"
+      return 0
+    fi
+  done
+  return 1
+}
+
+kns_kubectl_apply_pins() {
+  [[ -n "${_kns_pin_ctx:-}" ]] || return 1
+  command -v kubectl >/dev/null 2>&1 || return 1
+  kubectl config use-context "$_kns_pin_ctx" >/dev/null 2>&1 || return 1
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl config set-context "$_kns_pin_ctx" --namespace="$_kns_pin_ns" >/dev/null 2>&1
+  fi
+}
+
 kns_apply_dir_context() {
   local KNS_CONTEXT="" KNS_NAMESPACE="" KNS_POD="" KNS_CONTAINER=""
+  local KNS_ENVS="" KNS_DEFAULT_ENV="" KNS_PROMPT_ON_ENTER=""
   local kns_conf_files
   kns_conf_files=()
 
@@ -51,7 +243,12 @@ kns_apply_dir_context() {
     rm -f "$manual_override_file"
   fi
 
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER
+  if kns_session_read && ! kns_pwd_under_root "$_kns_session_root"; then
+    kns_session_clear
+  fi
+
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
   kns_conf_files=()
   if ! kns_collect_conf_files; then
     return 0
@@ -67,6 +264,49 @@ kns_apply_dir_context() {
     # shellcheck disable=SC1090
     source "$f" 2>/dev/null || true
   done
+
+  if [[ -n "${KNS_ENVS:-}" ]]; then
+    local owner
+    owner=$(kns_envs_owner_dir) || owner=""
+    if [[ -z "$owner" ]]; then
+      return 0
+    fi
+
+    if kns_session_read; then
+      if ! kns_pwd_under_root "$_kns_session_root"; then
+        kns_session_clear
+      elif [[ "$_kns_session_root" != "$owner" ]]; then
+        kns_session_clear
+      fi
+    fi
+
+    if kns_session_read && [[ "$_kns_session_root" == "$owner" ]]; then
+      if kns_env_pins "$_kns_session_env"; then
+        kns_kubectl_apply_pins
+      fi
+      return 0
+    fi
+
+    local chosen=""
+    local prompt
+    prompt=$(kns_effective_prompt)
+    if [[ "$prompt" == "1" && -t 0 ]]; then
+      chosen=$(kns_pick_env) || chosen=""
+    fi
+    if [[ -z "$chosen" && -n "${KNS_DEFAULT_ENV:-}" ]]; then
+      chosen="$KNS_DEFAULT_ENV"
+    fi
+    if [[ -n "$chosen" ]] && kns_env_in_list "$chosen" && kns_env_pins "$chosen"; then
+      kns_session_write "$owner" "$chosen"
+      kns_kubectl_apply_pins
+      if [[ "${KNS_QUIET:-}" != "1" ]]; then
+        echo "✓ kns env: $chosen → $_kns_pin_ctx${_kns_pin_ns:+ (ns: $_kns_pin_ns)}"
+      fi
+    elif [[ "${KNS_QUIET:-}" != "1" ]]; then
+      echo "kns: no environment selected (try: kns env)" >&2
+    fi
+    return 0
+  fi
 
   if [[ -z "${KNS_CONTEXT:-}" ]]; then
     return 0
