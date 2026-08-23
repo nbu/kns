@@ -146,7 +146,7 @@ main() {
   
   if [[ -f "$shell_rc" ]]; then
     # Add to PATH if not already there
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    if ! grep -qF "$INSTALL_DIR" "$shell_rc" 2>/dev/null; then
       info "Adding $INSTALL_DIR to PATH in $shell_rc"
       {
         echo ""

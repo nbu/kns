@@ -1,108 +1,135 @@
-#!/usr/bin/env bash
 # kns.sh - Shell integration for automatic context switching
-# Source this file in your .bashrc or .zshrc
+# Source from .bashrc / .zshrc (installers append this).
 
-# Hook into cd command
-kns_cd() {
-  builtin cd "$@" || return
-  
-  # Find and apply context if .kns.conf exists
-  # Merge values from all .kns.conf files from current directory up to root/home
-  local KNS_CONTEXT=""
-  local KNS_NAMESPACE=""
-  local KNS_POD=""
-  local KNS_CONTAINER=""
-  
-  # Collect all .kns.conf files from current directory up to root
-  local files=()
+kns_collect_conf_files() {
+  # Closest-first paths in kns_conf_files. Home only if not already listed.
+  kns_conf_files=()
   local dir="$PWD"
-  
+  local f
+  local home_file="$HOME/.kns.conf"
+
   while [[ "$dir" != "/" ]]; do
-    if [[ -f "$dir/.kns.conf" ]]; then
-      files+=("$dir/.kns.conf")
+    f="$dir/.kns.conf"
+    if [[ -f "$f" ]]; then
+      kns_conf_files+=("$f")
     fi
     dir=$(dirname "$dir")
   done
-  
-  # Add home directory file if it exists
-  if [[ -f "$HOME/.kns.conf" ]]; then
-    files+=("$HOME/.kns.conf")
+
+  if [[ -f "$home_file" ]]; then
+    local already=0
+    local existing
+    for existing in ${kns_conf_files[@]+"${kns_conf_files[@]}"}; do
+      if [[ "$existing" == "$home_file" ]]; then
+        already=1
+        break
+      fi
+    done
+    if [[ $already -eq 0 ]]; then
+      kns_conf_files+=("$home_file")
+    fi
   fi
-  
-  # Debug output (enable with KNS_DEBUG=1)
+
+  [[ ${#kns_conf_files[@]} -gt 0 ]]
+}
+
+kns_apply_dir_context() {
+  local KNS_CONTEXT="" KNS_NAMESPACE="" KNS_POD="" KNS_CONTAINER=""
+  local kns_conf_files
+  kns_conf_files=()
+
   if [[ "${KNS_DEBUG:-}" == "1" ]]; then
-    if [[ ${#files[@]} -gt 0 ]]; then
-      echo "[kns] Found config files: ${files[*]}" >&2
+    if kns_collect_conf_files; then
+      echo "[kns] Found config files: ${kns_conf_files[*]}" >&2
     else
       echo "[kns] No config file found" >&2
     fi
   fi
-  
-  # Clear manual override file when directory changes (user moved to a new location)
-  # This allows .kns.conf files to take effect again
+
   local manual_override_file="${KNS_CONFIG_DIR:-$HOME/.kns}/manual_override"
   if [[ -f "$manual_override_file" ]]; then
     rm -f "$manual_override_file"
   fi
-  
-  if [[ ${#files[@]} -gt 0 ]]; then
-    # Source files in reverse order (parent/home first, then current)
-    # This way current directory values override parent values
-    local i
-    for ((i=${#files[@]}-1; i>=0; i--)); do
-      if [[ -f "${files[i]}" ]]; then
-        source "${files[i]}" 2>/dev/null || true
+
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER
+  kns_conf_files=()
+  if ! kns_collect_conf_files; then
+    return 0
+  fi
+
+  # Farthest-first via prepend (bash 0-based and zsh 1-based safe).
+  local reverse=()
+  local f
+  for f in ${kns_conf_files[@]+"${kns_conf_files[@]}"}; do
+    reverse=("$f" ${reverse[@]+"${reverse[@]}"})
+  done
+  for f in ${reverse[@]+"${reverse[@]}"}; do
+    # shellcheck disable=SC1090
+    source "$f" 2>/dev/null || true
+  done
+
+  if [[ -z "${KNS_CONTEXT:-}" ]]; then
+    return 0
+  fi
+
+  if ! command -v kubectl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local current_context=""
+  current_context=$(kubectl config current-context 2>/dev/null || echo "")
+  local current_namespace=""
+  current_namespace=$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || echo "")
+
+  local needs_switch=0
+  if [[ "$current_context" != "$KNS_CONTEXT" ]]; then
+    needs_switch=1
+  elif [[ -n "${KNS_NAMESPACE:-}" && "$current_namespace" != "$KNS_NAMESPACE" ]]; then
+    needs_switch=1
+  fi
+
+  if [[ $needs_switch -eq 1 ]]; then
+    if kubectl config use-context "$KNS_CONTEXT" >/dev/null 2>&1; then
+      if [[ -n "${KNS_NAMESPACE:-}" ]]; then
+        kubectl config set-context "$KNS_CONTEXT" --namespace="$KNS_NAMESPACE" >/dev/null 2>&1
       fi
-    done
-    
-    if [[ -n "${KNS_CONTEXT:-}" ]]; then
-      # Check if kubectl is available
-      if command -v kubectl >/dev/null 2>&1; then
-        # Get current context to avoid unnecessary switching
-        local current_context=""
-        current_context=$(kubectl config current-context 2>/dev/null || echo "")
-        local current_namespace=""
-        current_namespace=$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || echo "")
-        
-        # Switch if context is different or namespace needs to be set/changed
-        local needs_switch=0
-        if [[ "$current_context" != "$KNS_CONTEXT" ]]; then
-          needs_switch=1
-        elif [[ -n "${KNS_NAMESPACE:-}" ]] && [[ "$current_namespace" != "$KNS_NAMESPACE" ]]; then
-          needs_switch=1
-        fi
-        
-        if [[ $needs_switch -eq 1 ]]; then
-          # Switch context
-          if kubectl config use-context "$KNS_CONTEXT" >/dev/null 2>&1; then
-            # Set namespace if provided
-            if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-              kubectl config set-context "$KNS_CONTEXT" --namespace="$KNS_NAMESPACE" >/dev/null 2>&1
-            fi
-            
-            # Optional: show context change (can be made quiet)
-            if [[ "${KNS_QUIET:-}" != "1" ]]; then
-              if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-                echo "✓ Switched to context: $KNS_CONTEXT (namespace: $KNS_NAMESPACE)"
-              else
-                echo "✓ Switched to context: $KNS_CONTEXT"
-              fi
-            fi
-          fi
+      if [[ "${KNS_QUIET:-}" != "1" ]]; then
+        if [[ -n "${KNS_NAMESPACE:-}" ]]; then
+          echo "✓ Switched to context: $KNS_CONTEXT (namespace: $KNS_NAMESPACE)"
+        else
+          echo "✓ Switched to context: $KNS_CONTEXT"
         fi
       fi
     fi
   fi
 }
 
-# Override cd command
-alias cd=kns_cd
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  if ! autoload -U add-zsh-hook 2>/dev/null; then
+    echo "kns: warning: could not load add-zsh-hook; auto-switch disabled" >&2
+  else
+    add-zsh-hook chpwd kns_apply_dir_context
+  fi
+elif [[ -n "${BASH_VERSION:-}" ]]; then
+  kns_cd() {
+    builtin cd "$@" || return
+    kns_apply_dir_context
+  }
+  kns_pushd() {
+    builtin pushd "$@" || return
+    kns_apply_dir_context
+  }
+  kns_popd() {
+    builtin popd "$@" || return
+    kns_apply_dir_context
+  }
+  alias cd=kns_cd
+  alias pushd=kns_pushd
+  alias popd=kns_popd
+fi
 
-# Make kns available
 if command -v kns >/dev/null 2>&1; then
-  # kns is already in PATH
   :
 elif [[ -f "$HOME/.local/bin/kns" ]]; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
-
