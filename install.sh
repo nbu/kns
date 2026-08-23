@@ -69,7 +69,7 @@ fi
 
 # Add to PATH if not already there
 if [[ -n "$SHELL_RC" ]] && [[ -f "$SHELL_RC" ]]; then
-  if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  if ! grep -qF "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
     echo "Adding $INSTALL_DIR to PATH in $SHELL_RC"
     echo "" >> "$SHELL_RC"
     echo "# kns - Kubernetes context switcher" >> "$SHELL_RC"
