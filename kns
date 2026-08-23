@@ -460,46 +460,54 @@ cmd_set() {
 
 # Show merged kns config
 cmd_show() {
-  # Check for manual override first
+  local has_manual=0
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   if [[ -f "$manual_override_file" ]]; then
     local KNS_MANUAL_OVERRIDE=""
     local KNS_MANUAL_CONTEXT=""
     local KNS_MANUAL_NAMESPACE=""
+    # shellcheck disable=SC1090
     source "$manual_override_file" 2>/dev/null || true
-    
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" ]] && [[ -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+      has_manual=1
       echo "Source: Manual override (from 'kns use' command)"
-      echo "Context: ${KNS_MANUAL_CONTEXT}"
-      [[ -n "${KNS_MANUAL_NAMESPACE:-}" ]] && echo "Namespace: ${KNS_MANUAL_NAMESPACE}"
-      return 0
     fi
   fi
-  
+
   if ! _kns_source_merged_conf; then
-    echo "No .kns.conf file found in current or parent directories"
-    exit 1
+    if [[ $has_manual -eq 0 ]]; then
+      echo "No .kns.conf file found in current or parent directories"
+      exit 1
+    fi
+  elif [[ $has_manual -eq 0 ]]; then
+    if [[ ${#_kns_conf_files[@]} -gt 1 ]]; then
+      echo "Source: ${_kns_conf_files[*]} (merged)"
+    else
+      echo "Source: ${_kns_conf_files[0]}"
+    fi
   fi
 
-  if [[ ${#_kns_conf_files[@]} -gt 1 ]]; then
-    echo "Source: ${_kns_conf_files[*]} (merged)"
-  else
-    echo "Source: ${_kns_conf_files[0]}"
-  fi
+  _kns_resolve_effective_pins || true
 
-  if [[ -n "${KNS_CONTEXT:-}" ]]; then
-    echo "Context: $KNS_CONTEXT"
+  if [[ -n "${_kns_pin_ctx:-}" ]]; then
+    echo "Context: $_kns_pin_ctx"
   else
     echo "Context: <not set>"
   fi
-  if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-    echo "Namespace: $KNS_NAMESPACE"
-  fi
-  if [[ -n "${KNS_POD:-}" ]]; then
-    echo "Pod: $KNS_POD"
-  fi
-  if [[ -n "${KNS_CONTAINER:-}" ]]; then
-    echo "Container: $KNS_CONTAINER"
+  [[ -n "${_kns_pin_ns:-}" ]] && echo "Namespace: $_kns_pin_ns"
+  [[ -n "${_kns_pin_pod:-}" ]] && echo "Pod: $_kns_pin_pod"
+  [[ -n "${_kns_pin_container:-}" ]] && echo "Container: $_kns_pin_container"
+
+  if _kns_is_multi_env; then
+    echo "Environments: $KNS_ENVS"
+    echo "Default: ${KNS_DEFAULT_ENV:-<none>}"
+    local owner=""
+    owner=$(_kns_envs_owner_dir || true)
+    if _kns_session_read && [[ -n "$owner" && "$_kns_session_root" == "$owner" ]] && _kns_pwd_under_root "$owner"; then
+      echo "Active env: $_kns_session_env"
+    else
+      echo "No active environment (use 'kns env …' to select one)"
+    fi
   fi
 }
 
@@ -627,33 +635,14 @@ cmd_container() {
 
 # Auto-switch context based on current directory
 auto_switch_context() {
-  # Check for manual override from 'kns use' command (stored in file)
-  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
-  if [[ -f "$manual_override_file" ]]; then
-    local KNS_MANUAL_OVERRIDE=""
-    local KNS_MANUAL_CONTEXT=""
-    local KNS_MANUAL_NAMESPACE=""
-    source "$manual_override_file" 2>/dev/null || true
-    
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" ]] && [[ -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
-      kubectl config use-context "$KNS_MANUAL_CONTEXT" >/dev/null 2>&1
-      if [[ -n "${KNS_MANUAL_NAMESPACE:-}" ]]; then
-        kubectl config set-context "$KNS_MANUAL_CONTEXT" --namespace="$KNS_MANUAL_NAMESPACE" >/dev/null 2>&1
-      fi
-      return 0
-    fi
-  fi
-  
-  # No manual override, so use .kns.conf if available
-  if _kns_source_merged_conf; then
-    if [[ -n "${KNS_CONTEXT:-}" ]]; then
-      kubectl config use-context "$KNS_CONTEXT" >/dev/null 2>&1
-      if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-        kubectl config set-context "$KNS_CONTEXT" --namespace="$KNS_NAMESPACE" >/dev/null 2>&1
+  if _kns_resolve_effective_pins; then
+    if [[ -n "${_kns_pin_ctx:-}" ]]; then
+      kubectl config use-context "$_kns_pin_ctx" >/dev/null 2>&1 || true
+      if [[ -n "${_kns_pin_ns:-}" ]]; then
+        kubectl config set-context "$_kns_pin_ctx" --namespace="$_kns_pin_ns" >/dev/null 2>&1 || true
       fi
     fi
   fi
-  # Note: Manual override file is only cleared on directory change (kns.sh)
 }
 
 # Set current pod
@@ -882,32 +871,26 @@ cmd_unset_container() {
 
 # Get containers of current pod
 cmd_get_containers() {
-  if ! _kns_source_merged_conf; then
-    echo "Error: No .kns.conf file found in current or parent directories" >&2
-    exit 1
-  fi
-
-  if [[ -z "${KNS_POD:-}" ]]; then
+  _kns_resolve_active
+  if [[ -z "${_kns_pod:-}" ]]; then
     echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
-  
-  # Auto-switch context if needed
+
   auto_switch_context
-  
-  # Get containers from pod
+
   local containers
-  containers=$(kubectl get pod "$KNS_POD" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
-  
+  containers=$(kubectl get pod "$_kns_pod" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+
   if [[ -z "$containers" ]]; then
-    echo "Error: Could not retrieve containers for pod '$KNS_POD'" >&2
+    echo "Error: Could not retrieve containers for pod '$_kns_pod'" >&2
     exit 1
   fi
-  
-  echo "Pod: $KNS_POD"
+
+  echo "Pod: $_kns_pod"
   echo "Containers:"
   for container in $containers; do
-    if [[ "$container" == "${KNS_CONTAINER:-}" ]]; then
+    if [[ "$container" == "${_kns_container:-}" ]]; then
       echo "  - $container (current)"
     else
       echo "  - $container"
@@ -917,16 +900,12 @@ cmd_get_containers() {
 
 # Get current pod and container from config
 get_current_pod_container() {
-  if ! _kns_source_merged_conf; then
+  _kns_resolve_active
+  if [[ -z "${_kns_pod:-}" ]]; then
     return 1
   fi
 
-  # Check if pod is set
-  if [[ -z "${KNS_POD:-}" ]]; then
-    return 1
-  fi
-  
-  echo "${KNS_POD}:${KNS_CONTAINER:-}"
+  echo "${_kns_pod}:${_kns_container:-}"
 }
 
 # Execute command in pod/container
@@ -1154,27 +1133,11 @@ _kns_resolve_active() {
   _kns_ns=""
   _kns_pod=""
   _kns_container=""
-
-  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
-  if [[ -f "$manual_override_file" ]]; then
-    local KNS_MANUAL_OVERRIDE=""
-    local KNS_MANUAL_CONTEXT=""
-    local KNS_MANUAL_NAMESPACE=""
-    # shellcheck disable=SC1090
-    source "$manual_override_file" 2>/dev/null || true
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
-      _kns_ctx="$KNS_MANUAL_CONTEXT"
-      _kns_ns="${KNS_MANUAL_NAMESPACE:-}"
-    fi
-  fi
-
-  if _kns_source_merged_conf; then
-    if [[ -z "$_kns_ctx" ]]; then
-      _kns_ctx="${KNS_CONTEXT:-}"
-      _kns_ns="${KNS_NAMESPACE:-}"
-    fi
-    _kns_pod="${KNS_POD:-}"
-    _kns_container="${KNS_CONTAINER:-}"
+  if _kns_resolve_effective_pins; then
+    _kns_ctx="$_kns_pin_ctx"
+    _kns_ns="$_kns_pin_ns"
+    _kns_pod="$_kns_pin_pod"
+    _kns_container="$_kns_pin_container"
   fi
 }
 
