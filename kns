@@ -49,8 +49,20 @@ main() {
     unlink)
       _kns_removed_hint "unlink" "unset"
       ;;
-    gp|gs|gd|ns)
+    pods|svc|deploy|namespaces)
       cmd_kubectl "$cmd" "$@"
+      ;;
+    gp)
+      _kns_removed_hint "gp" "pods"
+      ;;
+    gs)
+      _kns_removed_hint "gs" "svc"
+      ;;
+    gd)
+      _kns_removed_hint "gd" "deploy"
+      ;;
+    ns)
+      _kns_removed_hint "ns" "namespaces"
       ;;
     sp)
       cmd_set_pod "$@"
@@ -299,16 +311,16 @@ cmd_kubectl() {
   auto_switch_context
 
   case "$cmd" in
-    gp)
+    pods)
       kubectl get pods "$@"
       ;;
-    gs)
+    svc)
       kubectl get services "$@"
       ;;
-    gd)
+    deploy)
       kubectl get deployments "$@"
       ;;
-    ns)
+    namespaces)
       kubectl get namespaces "$@"
       ;;
   esac
