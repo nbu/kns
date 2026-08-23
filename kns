@@ -171,7 +171,8 @@ _kns_collect_conf_files() {
 
 # Unset kns vars; source collected files farthest → closest (child wins).
 _kns_source_merged_conf() {
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
   if ! _kns_collect_conf_files; then
     return 1
   fi
@@ -183,6 +184,227 @@ _kns_source_merged_conf() {
     fi
   done
   return 0
+}
+
+KNS_SESSION_FILE="${KNS_SESSION_FILE:-$KNS_CONFIG_DIR/active_env}"
+KNS_GLOBAL_CONFIG_FILE="${KNS_GLOBAL_CONFIG_FILE:-$KNS_CONFIG_DIR/config}"
+
+_kns_is_multi_env() {
+  [[ -n "${KNS_ENVS:-}" ]]
+}
+
+_kns_valid_env_name() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+_kns_env_pins() {
+  local name="$1"
+  local ctx_var ns_var pod_var ctr_var
+  _kns_pin_ctx=""
+  _kns_pin_ns=""
+  _kns_pin_pod=""
+  _kns_pin_container=""
+  ctx_var="KNS_ENV_${name}_CONTEXT"
+  ns_var="KNS_ENV_${name}_NAMESPACE"
+  pod_var="KNS_ENV_${name}_POD"
+  ctr_var="KNS_ENV_${name}_CONTAINER"
+  _kns_pin_ctx="${!ctx_var:-}"
+  _kns_pin_ns="${!ns_var:-}"
+  _kns_pin_pod="${!pod_var:-}"
+  _kns_pin_container="${!ctr_var:-}"
+  [[ -n "$_kns_pin_ctx" ]]
+}
+
+_kns_envs_owner_dir() {
+  local f dir
+  for f in "${_kns_conf_files[@]+"${_kns_conf_files[@]}"}"; do
+    dir=$(
+      # shellcheck disable=SC1090
+      unset KNS_ENVS
+      source "$f" 2>/dev/null || true
+      if [[ -n "${KNS_ENVS:-}" ]]; then
+        dirname "$f"
+      fi
+    )
+    if [[ -n "$dir" ]]; then
+      echo "$dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_kns_session_clear() {
+  rm -f "$KNS_SESSION_FILE"
+}
+
+_kns_session_write() {
+  local root="$1"
+  local env="$2"
+  mkdir -p "$KNS_CONFIG_DIR"
+  cat > "$KNS_SESSION_FILE" <<EOF
+KNS_SESSION_ROOT="$root"
+KNS_SESSION_ENV="$env"
+EOF
+}
+
+_kns_session_read() {
+  _kns_session_root=""
+  _kns_session_env=""
+  [[ -f "$KNS_SESSION_FILE" ]] || return 1
+  local KNS_SESSION_ROOT="" KNS_SESSION_ENV=""
+  # shellcheck disable=SC1090
+  source "$KNS_SESSION_FILE" 2>/dev/null || return 1
+  _kns_session_root="${KNS_SESSION_ROOT:-}"
+  _kns_session_env="${KNS_SESSION_ENV:-}"
+  [[ -n "$_kns_session_root" && -n "$_kns_session_env" ]]
+}
+
+_kns_pwd_under_root() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
+  [[ "$PWD" == "$root" || "$PWD" == "$root"/* ]]
+}
+
+_kns_global_prompt() {
+  if [[ -f "$KNS_GLOBAL_CONFIG_FILE" ]]; then
+    local v
+    v=$(grep -E '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+    case "$v" in
+      0|off|OFF|false|False) echo 0; return 0 ;;
+      1|on|ON|true|True) echo 1; return 0 ;;
+    esac
+  fi
+  echo 1
+}
+
+_kns_set_global_prompt() {
+  local raw="${1:-}"
+  local v
+  case "$raw" in
+    on|ON|1) v=1 ;;
+    off|OFF|0) v=0 ;;
+    *)
+      echo "Usage: kns env prompt global [on|off]" >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$KNS_CONFIG_DIR"
+  if [[ -f "$KNS_GLOBAL_CONFIG_FILE" ]] && grep -qE '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" 2>/dev/null; then
+    # portable overwrite: rewrite file keeping other keys if any
+    local tmp
+    tmp=$(mktemp)
+    grep -vE '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" > "$tmp" || true
+    echo "prompt_on_enter=$v" >> "$tmp"
+    mv "$tmp" "$KNS_GLOBAL_CONFIG_FILE"
+  else
+    echo "prompt_on_enter=$v" > "$KNS_GLOBAL_CONFIG_FILE"
+  fi
+}
+
+_kns_effective_prompt() {
+  # Call after merge so KNS_PROMPT_ON_ENTER is set if present in project.
+  local p="${KNS_PROMPT_ON_ENTER-}"
+  if [[ -n "$p" ]]; then
+    case "$p" in
+      0|off|OFF) echo 0; return 0 ;;
+      *) echo 1; return 0 ;;
+    esac
+  fi
+  _kns_global_prompt
+}
+
+_kns_kubectl_apply_pins() {
+  if [[ -z "${_kns_pin_ctx:-}" ]]; then
+    return 1
+  fi
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "Error: kubectl is not installed or not in PATH" >&2
+    return 1
+  fi
+  if ! kubectl config use-context "$_kns_pin_ctx" >/dev/null 2>&1; then
+    echo "Error: Context '$_kns_pin_ctx' not found" >&2
+    return 1
+  fi
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl config set-context "$_kns_pin_ctx" --namespace="$_kns_pin_ns" >/dev/null 2>&1
+  fi
+  return 0
+}
+
+_kns_env_in_list() {
+  local want="$1"
+  local e
+  for e in ${KNS_ENVS:-}; do
+    [[ "$e" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+_kns_resolve_effective_pins() {
+  _kns_pin_ctx=""
+  _kns_pin_ns=""
+  _kns_pin_pod=""
+  _kns_pin_container=""
+
+  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
+  local has_manual=0
+  local man_ctx="" man_ns=""
+  if [[ -f "$manual_override_file" ]]; then
+    local KNS_MANUAL_OVERRIDE="" KNS_MANUAL_CONTEXT="" KNS_MANUAL_NAMESPACE=""
+    # shellcheck disable=SC1090
+    source "$manual_override_file" 2>/dev/null || true
+    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+      man_ctx="$KNS_MANUAL_CONTEXT"
+      man_ns="${KNS_MANUAL_NAMESPACE:-}"
+      _kns_pin_ctx="$man_ctx"
+      _kns_pin_ns="$man_ns"
+      has_manual=1
+    fi
+  fi
+
+  if ! _kns_source_merged_conf; then
+    [[ $has_manual -eq 1 ]]
+    return $?
+  fi
+
+  local owner=""
+  if _kns_is_multi_env; then
+    owner=$(_kns_envs_owner_dir || true)
+    if _kns_session_read && [[ -n "$owner" && "$_kns_session_root" == "$owner" ]] && _kns_pwd_under_root "$owner"; then
+      if _kns_env_pins "$_kns_session_env"; then
+        if [[ $has_manual -eq 1 ]]; then
+          # Manual override wins for ctx/ns; keep env pod/container from session env.
+          local pod="$_kns_pin_pod" ctr="$_kns_pin_container"
+          _kns_pin_ctx="$man_ctx"
+          _kns_pin_ns="$man_ns"
+          _kns_pin_pod="$pod"
+          _kns_pin_container="$ctr"
+        fi
+        return 0
+      fi
+    fi
+    # Multi-env but no usable session: do not fall back to flat keys.
+    if [[ $has_manual -eq 1 ]]; then
+      _kns_pin_pod=""
+      _kns_pin_container=""
+      return 0
+    fi
+    _kns_pin_ctx=""
+    _kns_pin_ns=""
+    _kns_pin_pod=""
+    _kns_pin_container=""
+    return 1
+  fi
+
+  # Single-env flat
+  if [[ $has_manual -eq 0 ]]; then
+    _kns_pin_ctx="${KNS_CONTEXT:-}"
+    _kns_pin_ns="${KNS_NAMESPACE:-}"
+  fi
+  _kns_pin_pod="${KNS_POD:-}"
+  _kns_pin_container="${KNS_CONTAINER:-}"
+  [[ -n "$_kns_pin_ctx" ]]
 }
 
 # Read pod/container from .kns.conf file
