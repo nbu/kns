@@ -244,7 +244,7 @@ All shortcuts automatically switch context based on `.kns.conf` before executing
   kns pf stop app
   ```
 
-Background port-forwards stop automatically when you leave the project directory tree or switch named environments.
+Background port-forwards stop automatically when you leave the project directory tree or switch named environments. Leave cleanup uses the shared runtime registry and is global across shells, so changing directory in one shell can stop a forward started for another project in a different shell.
 
 - `kns container set <container-name>` - Set current container (requires pod)
   ```bash
@@ -375,6 +375,24 @@ Breaking rename (no shims). Old names print a redirect hint:
 
 You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is merged like project `.kns.conf` files (parent → child; child wins). If your current path is under `$HOME`, the home file is included only once.
 
+### Project keys
+
+Alongside `KNS_CONTEXT`, `KNS_NAMESPACE`, `KNS_POD`, and `KNS_CONTAINER`, a project can pin a default service with `KNS_SERVICE`. Named port mappings use:
+
+```bash
+KNS_SERVICE="my-api"
+KNS_FORWARDS="app metrics"
+KNS_FORWARD_DEFAULT="app"
+KNS_FORWARD_app="8080:80"
+KNS_FORWARD_app_TARGET="svc/my-api"
+KNS_FORWARD_metrics="9090:9090"
+KNS_FORWARD_metrics_TARGET="deploy/metrics"
+```
+
+`KNS_FORWARDS` is the space-separated mapping list. Each `KNS_FORWARD_<name>` stores ports, its optional `_TARGET` overrides the pinned pod or service, and `KNS_FORWARD_DEFAULT` selects the mapping used by bare `kns pf`.
+
+For named environments, use the same keys under the environment prefix: `KNS_ENV_<name>_SERVICE`, `KNS_ENV_<name>_FORWARDS`, `KNS_ENV_<name>_FORWARD_<mapping>`, `KNS_ENV_<name>_FORWARD_<mapping>_TARGET`, and `KNS_ENV_<name>_FORWARD_DEFAULT`.
+
 ### Runtime configuration directory
 
 `KNS_CONFIG_DIR` (default: `~/.kns`) stores runtime and global state:
@@ -382,6 +400,7 @@ You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is m
 - `manual_override` — the temporary context selected by `kns use`
 - `active_env` — the active named-environment session
 - `config` — global settings such as `prompt_on_enter`
+- `pf/` — background port-forward registry records and logs
 
 To use another location:
 

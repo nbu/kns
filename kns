@@ -187,8 +187,11 @@ _kns_source_merged_conf() {
   for env_var in ${!KNS_ENV_@}; do
     unset "$env_var"
   done
+  for env_var in ${!KNS_FORWARD_@}; do
+    unset "$env_var"
+  done
   unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER KNS_SERVICE \
-    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER KNS_FORWARDS
   if ! _kns_collect_conf_files; then
     return 1
   fi
@@ -658,8 +661,10 @@ cmd_env_remove() {
   _kns_source_merged_conf || true
   _kns_require_multi_env || return 1
   _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
-  local file envs="" e
+  local file envs="" e forwards_var forwards mapping
   file=$(_kns_env_conf_file)
+  forwards_var="KNS_ENV_${name}_FORWARDS"
+  forwards="${!forwards_var:-}"
   for e in $KNS_ENVS; do
     [[ "$e" == "$name" ]] || envs="${envs:+$envs }$e"
   done
@@ -668,6 +673,12 @@ cmd_env_remove() {
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_POD"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_CONTAINER"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_SERVICE"
+  for mapping in $forwards; do
+    _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_${mapping}"
+    _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_${mapping}_TARGET"
+  done
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARDS"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_DEFAULT"
   _kns_conf_upsert "$file" KNS_ENVS "$envs"
   if [[ "${KNS_DEFAULT_ENV:-}" == "$name" ]]; then
     if [[ -n "$envs" ]]; then
@@ -1057,7 +1068,12 @@ cmd_service() {
 _kns_valid_forward_name() {
   [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] &&
     [[ "$1" != DEFAULT ]] &&
-    [[ "$1" != *_TARGET ]]
+    [[ "$1" != *_TARGET ]] &&
+    [[ "$1" != set ]] &&
+    [[ "$1" != unset ]] &&
+    [[ "$1" != start ]] &&
+    [[ "$1" != stop ]] &&
+    [[ "$1" != list ]]
 }
 
 _kns_is_ports_arg() {
@@ -1285,7 +1301,8 @@ _kns_pf_scope() {
 }
 
 _kns_pf_record_in_scope() {
-  [[ "$KNS_PF_ROOT" == "$_kns_pf_scope_root" &&
+  [[ ("$KNS_PF_ROOT" == "$_kns_pf_scope_root" ||
+    "$PWD" == "$KNS_PF_ROOT" || "$PWD" == "$KNS_PF_ROOT"/*) &&
     "$KNS_PF_ENV" == "$_kns_pf_scope_env" ]]
 }
 
@@ -1310,6 +1327,11 @@ _kns_pf_write_record() {
   } > "$record"
 }
 
+_kns_pf_delete_record() {
+  local record="$1"
+  rm -f "${KNS_PF_LOG:-}" "$record"
+}
+
 cmd_pf_start() {
   auto_switch_context mutate || exit 1
   _kns_pf_resolve "$@" || exit 1
@@ -1327,7 +1349,7 @@ cmd_pf_start() {
     fi
     _kns_pf_record_in_scope || continue
     if ! kill -0 "$KNS_PF_PID" 2>/dev/null; then
-      rm -f "$record"
+      _kns_pf_delete_record "$record"
       continue
     fi
     if [[ $(_kns_pf_local_port "$KNS_PF_PORTS") == "$local_port" ]]; then
@@ -1364,7 +1386,7 @@ cmd_pf_start() {
   if ! kill -0 "$pid" 2>/dev/null; then
     echo "Error: port-forward failed to start:" >&2
     tail -n 20 "$log" >&2 || true
-    rm -f "$record"
+    _kns_pf_delete_record "$record"
     exit 1
   fi
   echo "Started ${_kns_pf_mapping:-$_kns_pf_ports} ($id, pid $pid)"
@@ -1391,7 +1413,7 @@ cmd_pf_list() {
     printf '%-28s %-16s %-13s %-24s %s\n' \
       "$KNS_PF_ID" "${KNS_PF_NAME:--}" "$KNS_PF_PORTS" "$KNS_PF_TARGET" "$status"
     if [[ "$status" == "dead" ]]; then
-      rm -f "$record"
+      _kns_pf_delete_record "$record"
     fi
   done
 }
@@ -1418,7 +1440,7 @@ cmd_pf_stop() {
     if kill -0 "$KNS_PF_PID" 2>/dev/null; then
       kill "$KNS_PF_PID" 2>/dev/null || true
     fi
-    rm -f "$record"
+    _kns_pf_delete_record "$record"
     echo "Stopped ${KNS_PF_NAME:-$KNS_PF_ID}"
   done
   if [[ $matched -eq 0 ]]; then
@@ -1440,7 +1462,7 @@ _kns_pf_cleanup_left() {
     if kill -0 "$KNS_PF_PID" 2>/dev/null; then
       kill "$KNS_PF_PID" 2>/dev/null || true
     fi
-    rm -f "$record"
+    _kns_pf_delete_record "$record"
   done
 }
 
@@ -1458,7 +1480,7 @@ _kns_pf_stop_env() {
     if kill -0 "$KNS_PF_PID" 2>/dev/null; then
       kill "$KNS_PF_PID" 2>/dev/null || true
     fi
-    rm -f "$record"
+    _kns_pf_delete_record "$record"
   done
 }
 

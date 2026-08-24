@@ -50,6 +50,20 @@ kns_clear_env_pins() {
   fi
 }
 
+kns_clear_forward_pins() {
+  local v
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    for v in ${(Mk)parameters:#KNS_FORWARD_*}; do
+      unset "$v"
+    done
+  else
+    for v in ${!KNS_FORWARD_@}; do
+      unset "$v"
+    done
+  fi
+  unset KNS_FORWARDS
+}
+
 kns_env_in_list() {
   local want="$1"
   local rest="${KNS_ENVS:-}"
@@ -239,7 +253,9 @@ kns_kubectl_apply_pins() {
 
 kns_apply_dir_context() {
   kns_clear_env_pins
-  local KNS_CONTEXT="" KNS_NAMESPACE="" KNS_POD="" KNS_CONTAINER=""
+  kns_clear_forward_pins
+  local KNS_CONTEXT="" KNS_NAMESPACE="" KNS_POD="" KNS_CONTAINER="" KNS_SERVICE=""
+  local KNS_FORWARDS=""
   local KNS_ENVS="" KNS_DEFAULT_ENV="" KNS_PROMPT_ON_ENTER=""
   local kns_conf_files
   kns_conf_files=()
@@ -265,8 +281,8 @@ kns_apply_dir_context() {
     kns __pf_cleanup_left >/dev/null 2>&1 || true
   fi
 
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
-    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER KNS_SERVICE \
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER KNS_FORWARDS
   kns_conf_files=()
   if ! kns_collect_conf_files; then
     return 0

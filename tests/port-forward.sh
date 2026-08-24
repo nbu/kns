@@ -134,6 +134,74 @@ EOF
   grep -q KNS_FORWARD_app "$dir/proj/.kns.conf" && fail "forward keys remain" || true
 }
 
+test_pf_set_unset_multi() {
+  local dir="$TMP/pf-set-multi"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage prod"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+KNS_ENV_prod_CONTEXT="prod-ctx"
+EOF
+  cat > "$dir/cfg/active_env" <<EOF
+KNS_SESSION_ROOT="$dir/proj"
+KNS_SESSION_ENV="stage"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf set app 8080:8080 svc/my-api"
+  grep -q 'KNS_ENV_stage_FORWARD_app="8080:8080"' "$dir/proj/.kns.conf" ||
+    fail "multi-env forward ports not written with active env prefix"
+  grep -q 'KNS_ENV_stage_FORWARD_app_TARGET="svc/my-api"' "$dir/proj/.kns.conf" ||
+    fail "multi-env forward target not written with active env prefix"
+  grep -q 'KNS_ENV_stage_FORWARDS="app"' "$dir/proj/.kns.conf" ||
+    fail "multi-env forwards list not written with active env prefix"
+  grep -q 'KNS_ENV_stage_FORWARD_DEFAULT="app"' "$dir/proj/.kns.conf" ||
+    fail "multi-env forward default not written with active env prefix"
+  grep -q '^KNS_FORWARD_' "$dir/proj/.kns.conf" &&
+    fail "multi-env forward should not write flat keys"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf unset app"
+  grep -q 'KNS_ENV_stage_FORWARD' "$dir/proj/.kns.conf" &&
+    fail "multi-env forward keys remain after unset" || true
+  grep -q 'KNS_ENV_stage_FORWARDS' "$dir/proj/.kns.conf" &&
+    fail "multi-env forwards list remains after unset" || true
+}
+
+test_env_remove_cleans_forward_keys() {
+  local dir="$TMP/env-remove-forwards"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage prod"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+KNS_ENV_stage_SERVICE="api"
+KNS_ENV_stage_FORWARDS="app metrics"
+KNS_ENV_stage_FORWARD_DEFAULT="app"
+KNS_ENV_stage_FORWARD_app="8080:80"
+KNS_ENV_stage_FORWARD_app_TARGET="svc/api"
+KNS_ENV_stage_FORWARD_metrics="9090:90"
+KNS_ENV_stage_FORWARD_metrics_TARGET="deploy/metrics"
+KNS_ENV_prod_CONTEXT="prod-ctx"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' env remove stage"
+  for key in \
+    KNS_ENV_stage_SERVICE \
+    KNS_ENV_stage_FORWARDS \
+    KNS_ENV_stage_FORWARD_DEFAULT \
+    KNS_ENV_stage_FORWARD_app \
+    KNS_ENV_stage_FORWARD_app_TARGET \
+    KNS_ENV_stage_FORWARD_metrics \
+    KNS_ENV_stage_FORWARD_metrics_TARGET; do
+    grep -q "^${key}=" "$dir/proj/.kns.conf" &&
+      fail "env remove left $key behind" || true
+  done
+}
+
 test_pf_rejects_reserved_names() {
   local dir="$TMP/pf-reserved"
   mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
@@ -141,7 +209,7 @@ test_pf_rejects_reserved_names() {
   cat > "$dir/proj/.kns.conf" <<'EOF'
 KNS_CONTEXT="ctx"
 EOF
-  for name in DEFAULT foo_TARGET; do
+  for name in DEFAULT foo_TARGET set unset start stop list; do
     if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
       bash -c "cd '$dir/proj' && '$KNS' pf set $name 8080:8080 svc/my-api" \
       >"$dir/output-$name" 2>&1; then
@@ -339,6 +407,38 @@ EOF
   wait_for_dead "$pid" || fail "stop did not terminate process"
 }
 
+test_pf_bg_nested_conf_scope() {
+  local dir="$TMP/pf-nested-scope"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj/child"
+  make_sleeping_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_POD="web-0"
+KNS_FORWARDS="app"
+KNS_FORWARD_app="18082:8080"
+EOF
+  cat > "$dir/proj/child/.kns.conf" <<'EOF'
+KNS_NAMESPACE="child"
+EOF
+
+  local record pid
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf start app"
+  record=$(printf '%s\n' "$dir/cfg"/pf/*.env)
+  # shellcheck disable=SC1090
+  source "$record"
+  pid="$KNS_PF_PID"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj/child' && '$KNS' pf list" > "$dir/list"
+  grep -q app "$dir/list" || fail "nested config list missed parent forward"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj/child' && '$KNS' pf stop app"
+  [[ ! -e "$record" ]] || fail "nested config stop did not remove parent record"
+  wait_for_dead "$pid" || fail "nested config stop did not terminate parent forward"
+}
+
 test_pf_bg_cleans_stale_records() {
   local dir="$TMP/pf-stale"
   mkdir -p "$dir/home" "$dir/cfg/pf" "$dir/proj"
@@ -359,10 +459,12 @@ KNS_PF_NAMESPACE=""
 KNS_PF_STARTED="0"
 KNS_PF_LOG="$dir/cfg/pf/stale-list.log"
 EOF
+  touch "$dir/cfg/pf/stale-list.log"
 
   HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
     bash -c "cd '$dir/proj' && '$KNS' pf list" > "$dir/list"
   [[ ! -e "$dir/cfg/pf/stale-list.env" ]] || fail "list did not clean stale record"
+  [[ ! -e "$dir/cfg/pf/stale-list.log" ]] || fail "list did not clean stale log"
 
   cat > "$dir/cfg/pf/stale-stop.env" <<EOF
 KNS_PF_ID="stale-stop"
@@ -377,9 +479,11 @@ KNS_PF_NAMESPACE=""
 KNS_PF_STARTED="0"
 KNS_PF_LOG="$dir/cfg/pf/stale-stop.log"
 EOF
+  touch "$dir/cfg/pf/stale-stop.log"
   HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
     bash -c "cd '$dir/proj' && '$KNS' pf stop stale-stop"
   [[ ! -e "$dir/cfg/pf/stale-stop.env" ]] || fail "stop did not clean stale record"
+  [[ ! -e "$dir/cfg/pf/stale-stop.log" ]] || fail "stop did not clean stale log"
 }
 
 test_pf_leave_stops() {
@@ -486,6 +590,8 @@ test_service_set_multi
 test_service_multi_rejects_no_session
 test_service_multi_rejects_stale_session
 test_pf_set_unset_single
+test_pf_set_unset_multi
+test_env_remove_cleans_forward_keys
 test_pf_rejects_reserved_names
 test_pf_foreground_pod
 test_pf_foreground_explicit_service
@@ -494,8 +600,9 @@ test_pf_foreground_default_service
 test_pf_foreground_requires_ports
 test_pf_foreground_requires_target
 test_pf_bg_lifecycle
+test_pf_bg_nested_conf_scope
 test_pf_bg_cleans_stale_records
 test_pf_env_switch_stops
 test_pf_leave_stops
 test_pf_completions
-echo "OK (partial — more tests added in later tasks)"
+echo "port-forward tests: PASS"
