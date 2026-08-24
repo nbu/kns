@@ -2156,7 +2156,7 @@ cmd_shell() {
 # --- Shell completion -------------------------------------------------------
 
 _kns_top_commands() {
-  printf '%s\n' set show use list unset env pods svc deploy namespaces pod container containers exec cp sh help completion
+  printf '%s\n' set show use list unset env pods svc deploy namespaces pod service pf container containers exec cp sh help completion
 }
 
 _kns_resolve_active() {
@@ -2174,6 +2174,27 @@ _kns_resolve_active() {
 
 _kns_kubectl_complete() {
   kubectl --request-timeout=2s "$@" 2>/dev/null || true
+}
+
+_kns_complete_scoped_names() {
+  local resource="$1"
+  local prefix="${2:-}"
+  _kns_resolve_active
+  local -a args=()
+  [[ -n "$_kns_ctx" ]] && args+=(--context="$_kns_ctx")
+  [[ -n "$_kns_ns" ]] && args+=(-n "$_kns_ns")
+  args+=(get "$resource" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && printf '%s%s\n' "$prefix" "$name"
+  done < <(_kns_kubectl_complete "${args[@]}")
+}
+
+_kns_complete_pf_targets() {
+  _kns_complete_scoped_names pods pod/
+  _kns_complete_scoped_names services svc/
+  _kns_complete_scoped_names deployments deploy/
 }
 
 _kns_complete_live() {
@@ -2206,6 +2227,19 @@ _kns_complete_live() {
         [[ -n "$_kns_ctx" ]] && args=(--context="$_kns_ctx" "${args[@]}")
         [[ -n "$_kns_ns" ]] && args=(-n "$_kns_ns" "${args[@]}")
         _kns_kubectl_complete "${args[@]}"
+      fi
+      ;;
+    service)
+      if [[ $n -eq 3 && "${words[1]}" == "set" ]]; then
+        _kns_complete_scoped_names services
+      fi
+      ;;
+    pf)
+      if [[ $n -eq 3 && "${words[1]}" != "start" && "${words[1]}" != "stop" &&
+        "${words[1]}" != "list" && "${words[1]}" != "set" && "${words[1]}" != "unset" ]] ||
+        [[ $n -eq 4 && "${words[1]}" == "start" ]] ||
+        [[ $n -eq 5 && "${words[1]}" == "set" ]]; then
+        _kns_complete_pf_targets
       fi
       ;;
     container)
@@ -2247,6 +2281,33 @@ cmd___complete() {
         printf '%s\n' set unset
       elif [[ $n -eq 3 && "$cmd" == "pod" && "${words[1]}" == "unset" ]]; then
         printf '%s\n' -c
+      fi
+      ;;
+    service)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' set unset
+      fi
+      ;;
+    pf)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' start stop list set unset
+        if _kns_pf_prefix 2>/dev/null; then
+          local forwards_var="${_kns_pf_key_prefix}FORWARDS"
+          # shellcheck disable=SC2086
+          printf '%s\n' ${!forwards_var:-}
+        fi
+      elif [[ $n -eq 3 && "${words[1]}" == "stop" ]]; then
+        printf '%s\n' all
+        if _kns_pf_scope 2>/dev/null; then
+          local record
+          for record in "$KNS_CONFIG_DIR"/pf/*.env; do
+            [[ -f "$record" ]] || continue
+            _kns_pf_record_load "$record" || continue
+            _kns_pf_record_in_scope || continue
+            [[ -n "$KNS_PF_NAME" ]] && printf '%s\n' "$KNS_PF_NAME"
+            printf '%s\n' "$KNS_PF_ID"
+          done
+        fi
       fi
       ;;
     completion)
@@ -2542,6 +2603,16 @@ KUBECTL SHORTCUTS:
 POD DEBUG:
     pod set <pod-name>           Set current pod for this directory
     pod unset [-c]               Unset local pod (-c also unsets container)
+    service set <service-name>   Set default service for port-forwarding
+    service unset                Unset the default service
+    pf [name|ports] [target]     Run a foreground port-forward
+    pf start [name|ports] [target]
+                                 Start a background port-forward
+    pf list                      List background port-forwards
+    pf stop [name|id|all]        Stop background port-forward(s)
+    pf set <name> <ports> [target]
+                                 Save a named port mapping
+    pf unset <name>              Remove a named port mapping
     container set <name>         Set current container (requires pod)
     container unset              Unset local container
     containers                   List containers of current pod
@@ -2557,6 +2628,11 @@ EXAMPLES:
     kns use staging-cluster staging
     kns pods
     kns pod set my-pod-123
+    kns service set my-api
+    kns pf set app 8080:80
+    kns pf start app
+    kns pf list
+    kns pf stop app
     kns container set app
     kns containers
     kns exec ls -la /tmp
@@ -2574,6 +2650,8 @@ CONFIGURATION:
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
+      - KNS_SERVICE: Default service for port-forwarding (optional)
+      - KNS_FORWARDS / KNS_FORWARD_<name>: Named port mappings (optional)
 
     Named environments (multi-env): when KNS_ENVS is set, flat KNS_CONTEXT /
     KNS_NAMESPACE keys in the same merge are ignored. Per-environment keys:

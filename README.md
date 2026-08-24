@@ -218,6 +218,34 @@ All shortcuts automatically switch context based on `.kns.conf` before executing
   kns pod unset -c
   ```
 
+- `kns service set <service-name>` / `kns service unset` - Set or clear the default service for port-forwarding
+  ```bash
+  kns service set my-api
+  ```
+
+- `kns pf [name|ports] [target]` - Run a foreground port-forward using a named mapping or literal ports
+  ```bash
+  kns pf 8080:8080                 # Uses the pinned pod or service
+  kns pf 8080:80 svc/my-api        # Explicit pod/, svc/, or deploy/ target
+  ```
+
+- `kns pf set <name> <ports> [target]` / `kns pf unset <name>` - Save or remove a named port mapping
+  ```bash
+  kns pf set app 8080:80 svc/my-api
+  kns pf app
+  ```
+
+- `kns pf start [name|ports] [target]` - Start a port-forward in the background
+- `kns pf list` - List background port-forwards for the current project and environment
+- `kns pf stop [name|id|all]` - Stop matching background port-forwards
+  ```bash
+  kns pf start app
+  kns pf list
+  kns pf stop app
+  ```
+
+Background port-forwards stop automatically when you leave the project directory tree or switch named environments.
+
 - `kns container set <container-name>` - Set current container (requires pod)
   ```bash
   kns container set my-container

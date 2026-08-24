@@ -440,6 +440,47 @@ EOF
   fi
 }
 
+test_pf_completions() {
+  local dir="$TMP/pf-completions"
+  mkdir -p "$dir/home" "$dir/cfg/pf" "$dir/proj"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_FORWARDS="app metrics"
+EOF
+  cat > "$dir/cfg/pf/pf_test.env" <<EOF
+KNS_PF_ID=pf_test
+KNS_PF_PID=$$
+KNS_PF_ROOT=$dir/proj
+KNS_PF_ENV=
+KNS_PF_NAME=app
+EOF
+
+  local out expected
+  out=$(HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' __complete -- ''")
+  for expected in pf service; do
+    grep -qx "$expected" <<<"$out" || fail "missing top-level $expected completion"
+  done
+
+  out=$(HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' __complete -- pf ''")
+  for expected in start stop list set unset app metrics; do
+    grep -qx "$expected" <<<"$out" || fail "missing pf $expected completion"
+  done
+
+  out=$(HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' __complete -- pf stop ''")
+  for expected in all app pf_test; do
+    grep -qx "$expected" <<<"$out" || fail "missing pf stop $expected completion"
+  done
+
+  out=$(HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' __complete -- service ''")
+  for expected in set unset; do
+    grep -qx "$expected" <<<"$out" || fail "missing service $expected completion"
+  done
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
@@ -456,4 +497,5 @@ test_pf_bg_lifecycle
 test_pf_bg_cleans_stale_records
 test_pf_env_switch_stops
 test_pf_leave_stops
+test_pf_completions
 echo "OK (partial — more tests added in later tasks)"
