@@ -117,8 +117,26 @@ EOF
     fail "stale-session service unset changed config"
 }
 
+test_pf_set_unset_single() {
+  local dir="$TMP/pf-set"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+EOF
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf set app 8080:8080 svc/my-api"
+  grep -q 'KNS_FORWARD_app="8080:8080"' "$dir/proj/.kns.conf" || fail "ports missing"
+  grep -q 'KNS_FORWARD_app_TARGET="svc/my-api"' "$dir/proj/.kns.conf" || fail "target missing"
+  grep -q 'KNS_FORWARDS=.*app' "$dir/proj/.kns.conf" || fail "FORWARDS list missing"
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf unset app"
+  grep -q KNS_FORWARD_app "$dir/proj/.kns.conf" && fail "forward keys remain" || true
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
 test_service_multi_rejects_stale_session
+test_pf_set_unset_single
 echo "OK (partial — more tests added in later tasks)"

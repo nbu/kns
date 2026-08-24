@@ -101,6 +101,9 @@ main() {
     service)
       cmd_service "$@"
       ;;
+    pf)
+      cmd_pf "$@"
+      ;;
     container)
       cmd_container "$@"
       ;;
@@ -1041,6 +1044,125 @@ cmd_service() {
       echo "Usage: kns service set <service-name> | kns service unset" >&2
       exit 1
       ;;
+  esac
+}
+
+_kns_valid_forward_name() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+_kns_is_ports_arg() {
+  [[ "$1" =~ ^[0-9]+(:[0-9]+)?$ ]]
+}
+
+_kns_pf_prefix() {
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      return 1
+    fi
+    _kns_pf_key_prefix="KNS_ENV_${_kns_session_env}_"
+    _kns_pf_file="$owner/$KNS_LOCAL_FILE"
+    return 0
+  fi
+
+  _kns_pf_key_prefix="KNS_"
+  _kns_pf_file="$PWD/$KNS_LOCAL_FILE"
+}
+
+cmd_pf_set() {
+  local name="${1:-}"
+  local ports="${2:-}"
+  local target="${3:-}"
+  if [[ $# -lt 2 || $# -gt 3 ]] ||
+    ! _kns_valid_forward_name "$name" || ! _kns_is_ports_arg "$ports"; then
+    echo "Usage: kns pf set <name> <ports> [target]" >&2
+    exit 1
+  fi
+
+  _kns_pf_prefix || exit 1
+  local forwards_key="${_kns_pf_key_prefix}FORWARDS"
+  local default_key="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+  local forward_key="${_kns_pf_key_prefix}FORWARD_${name}"
+  local target_key="${forward_key}_TARGET"
+  local forwards default current found=""
+  forwards=$(_kns_conf_read_key "$_kns_pf_file" "$forwards_key")
+  default=$(_kns_conf_read_key "$_kns_pf_file" "$default_key")
+
+  _kns_conf_upsert "$_kns_pf_file" "$forward_key" "$ports"
+  if [[ -n "$target" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$target_key" "$target"
+  else
+    _kns_conf_delete_key "$_kns_pf_file" "$target_key"
+  fi
+
+  for current in $forwards; do
+    if [[ "$current" == "$name" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ -z "$found" ]]; then
+    forwards="${forwards:+$forwards }$name"
+    _kns_conf_upsert "$_kns_pf_file" "$forwards_key" "$forwards"
+  fi
+  if [[ -z "$default" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$default_key" "$name"
+  fi
+}
+
+cmd_pf_unset() {
+  local name="${1:-}"
+  if [[ $# -ne 1 ]] || ! _kns_valid_forward_name "$name"; then
+    echo "Usage: kns pf unset <name>" >&2
+    exit 1
+  fi
+
+  _kns_pf_prefix || exit 1
+  local forwards_key="${_kns_pf_key_prefix}FORWARDS"
+  local default_key="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+  local forward_key="${_kns_pf_key_prefix}FORWARD_${name}"
+  local forwards default current remaining=""
+  forwards=$(_kns_conf_read_key "$_kns_pf_file" "$forwards_key")
+  default=$(_kns_conf_read_key "$_kns_pf_file" "$default_key")
+
+  _kns_conf_delete_key "$_kns_pf_file" "$forward_key"
+  _kns_conf_delete_key "$_kns_pf_file" "${forward_key}_TARGET"
+  for current in $forwards; do
+    [[ "$current" == "$name" ]] && continue
+    remaining="${remaining:+$remaining }$current"
+  done
+  if [[ -n "$remaining" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$forwards_key" "$remaining"
+  else
+    _kns_conf_delete_key "$_kns_pf_file" "$forwards_key"
+  fi
+
+  if [[ "$default" == "$name" ]]; then
+    if [[ -n "$remaining" ]]; then
+      _kns_conf_upsert "$_kns_pf_file" "$default_key" "${remaining%% *}"
+    else
+      _kns_conf_delete_key "$_kns_pf_file" "$default_key"
+    fi
+  fi
+}
+
+cmd_pf_run() {
+  echo "Error: kns pf run not implemented yet" >&2
+  exit 1
+}
+
+cmd_pf() {
+  local sub="${1:-}"
+  case "$sub" in
+    set) shift; cmd_pf_set "$@" ;;
+    unset) shift; cmd_pf_unset "$@" ;;
+    start|stop|list) shift; echo "Error: not implemented yet" >&2; exit 1 ;;
+    *) cmd_pf_run "$@" ;;
   esac
 }
 
