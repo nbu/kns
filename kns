@@ -98,6 +98,12 @@ main() {
     pod)
       cmd_pod "$@"
       ;;
+    service)
+      cmd_service "$@"
+      ;;
+    pf)
+      cmd_pf "$@"
+      ;;
     container)
       cmd_container "$@"
       ;;
@@ -127,6 +133,9 @@ main() {
       ;;
     __complete)
       cmd___complete "$@"
+      ;;
+    __pf_cleanup_left)
+      _kns_pf_cleanup_left
       ;;
     help|--help|-h)
       show_help
@@ -178,8 +187,11 @@ _kns_source_merged_conf() {
   for env_var in ${!KNS_ENV_@}; do
     unset "$env_var"
   done
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
-    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
+  for env_var in ${!KNS_FORWARD_@}; do
+    unset "$env_var"
+  done
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER KNS_SERVICE \
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER KNS_FORWARDS
   if ! _kns_collect_conf_files; then
     return 1
   fi
@@ -213,11 +225,12 @@ _kns_reserved_env_name() {
 
 _kns_env_pins() {
   local name="$1"
-  local ctx_var ns_var pod_var ctr_var
+  local ctx_var ns_var pod_var ctr_var svc_var
   _kns_pin_ctx=""
   _kns_pin_ns=""
   _kns_pin_pod=""
   _kns_pin_container=""
+  _kns_pin_service=""
   if ! _kns_valid_env_name "$name"; then
     echo "Error: Invalid environment name '$name'. Use letters, digits, and underscores; the first character cannot be a digit." >&2
     return 1
@@ -226,10 +239,12 @@ _kns_env_pins() {
   ns_var="KNS_ENV_${name}_NAMESPACE"
   pod_var="KNS_ENV_${name}_POD"
   ctr_var="KNS_ENV_${name}_CONTAINER"
+  svc_var="KNS_ENV_${name}_SERVICE"
   _kns_pin_ctx="${!ctx_var:-}"
   _kns_pin_ns="${!ns_var:-}"
   _kns_pin_pod="${!pod_var:-}"
   _kns_pin_container="${!ctr_var:-}"
+  _kns_pin_service="${!svc_var:-}"
   [[ -n "$_kns_pin_ctx" ]]
 }
 
@@ -532,6 +547,10 @@ cmd_env_use() {
   owner=$(_kns_envs_owner_dir || true)
   [[ -n "$owner" ]] || return 1
   _kns_kubectl_apply_pins || return 1
+  if _kns_session_read && [[ "$_kns_session_root" == "$owner" &&
+    "$_kns_session_env" != "$name" ]]; then
+    _kns_pf_stop_env "$owner" "$_kns_session_env"
+  fi
   _kns_session_write "$owner" "$name"
   echo "Switched to environment: $name"
   echo "  Context: $_kns_pin_ctx"
@@ -642,8 +661,10 @@ cmd_env_remove() {
   _kns_source_merged_conf || true
   _kns_require_multi_env || return 1
   _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
-  local file envs="" e
+  local file envs="" e forwards_var forwards mapping
   file=$(_kns_env_conf_file)
+  forwards_var="KNS_ENV_${name}_FORWARDS"
+  forwards="${!forwards_var:-}"
   for e in $KNS_ENVS; do
     [[ "$e" == "$name" ]] || envs="${envs:+$envs }$e"
   done
@@ -651,6 +672,13 @@ cmd_env_remove() {
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_NAMESPACE"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_POD"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_CONTAINER"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_SERVICE"
+  for mapping in $forwards; do
+    _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_${mapping}"
+    _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_${mapping}_TARGET"
+  done
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARDS"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_FORWARD_DEFAULT"
   _kns_conf_upsert "$file" KNS_ENVS "$envs"
   if [[ "${KNS_DEFAULT_ENV:-}" == "$name" ]]; then
     if [[ -n "$envs" ]]; then
@@ -736,6 +764,7 @@ _kns_resolve_effective_pins() {
   _kns_pin_ns=""
   _kns_pin_pod=""
   _kns_pin_container=""
+  _kns_pin_service=""
 
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   local has_manual=0
@@ -779,12 +808,14 @@ _kns_resolve_effective_pins() {
     if [[ $has_manual -eq 1 ]]; then
       _kns_pin_pod=""
       _kns_pin_container=""
+      _kns_pin_service=""
       return 0
     fi
     _kns_pin_ctx=""
     _kns_pin_ns=""
     _kns_pin_pod=""
     _kns_pin_container=""
+    _kns_pin_service=""
     return 1
   fi
 
@@ -795,6 +826,7 @@ _kns_resolve_effective_pins() {
   fi
   _kns_pin_pod="${KNS_POD:-}"
   _kns_pin_container="${KNS_CONTAINER:-}"
+  _kns_pin_service="${KNS_SERVICE:-}"
   [[ -n "$_kns_pin_ctx" ]]
 }
 
@@ -895,6 +927,7 @@ cmd_show() {
   [[ -n "${_kns_pin_ns:-}" ]] && echo "Namespace: $_kns_pin_ns"
   [[ -n "${_kns_pin_pod:-}" ]] && echo "Pod: $_kns_pin_pod"
   [[ -n "${_kns_pin_container:-}" ]] && echo "Container: $_kns_pin_container"
+  [[ -n "${_kns_pin_service:-}" ]] && echo "Service: $_kns_pin_service"
 
   if _kns_is_multi_env; then
     echo "Environments: $KNS_ENVS"
@@ -1015,6 +1048,454 @@ cmd_pod() {
   esac
 }
 
+cmd_service() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_service "$@"
+      ;;
+    unset)
+      cmd_unset_service "$@"
+      ;;
+    *)
+      echo "Usage: kns service set <service-name> | kns service unset" >&2
+      exit 1
+      ;;
+  esac
+}
+
+_kns_valid_forward_name() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] &&
+    [[ "$1" != DEFAULT ]] &&
+    [[ "$1" != *_TARGET ]] &&
+    [[ "$1" != set ]] &&
+    [[ "$1" != unset ]] &&
+    [[ "$1" != start ]] &&
+    [[ "$1" != stop ]] &&
+    [[ "$1" != list ]]
+}
+
+_kns_is_ports_arg() {
+  [[ "$1" =~ ^[0-9]+(:[0-9]+)?$ ]]
+}
+
+_kns_project_root() {
+  _kns_source_merged_conf || {
+    echo "$PWD"
+    return 0
+  }
+
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if [[ -n "$owner" ]]; then
+      echo "$owner"
+      return 0
+    fi
+  fi
+
+  local home_file="$HOME/$KNS_LOCAL_FILE"
+  local file
+  for file in "${_kns_conf_files[@]+"${_kns_conf_files[@]}"}"; do
+    if [[ "$file" != "$home_file" ]]; then
+      dirname "$file"
+      return 0
+    fi
+  done
+  if [[ -f "$home_file" ]]; then
+    dirname "$home_file"
+  else
+    echo "$PWD"
+  fi
+}
+
+_kns_pf_prefix() {
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      return 1
+    fi
+    _kns_pf_key_prefix="KNS_ENV_${_kns_session_env}_"
+    _kns_pf_file="$owner/$KNS_LOCAL_FILE"
+    return 0
+  fi
+
+  _kns_pf_key_prefix="KNS_"
+  _kns_pf_file="$PWD/$KNS_LOCAL_FILE"
+}
+
+cmd_pf_set() {
+  local name="${1:-}"
+  local ports="${2:-}"
+  local target="${3:-}"
+  if [[ $# -lt 2 || $# -gt 3 ]] ||
+    ! _kns_valid_forward_name "$name" || ! _kns_is_ports_arg "$ports"; then
+    echo "Usage: kns pf set <name> <ports> [target]" >&2
+    exit 1
+  fi
+
+  _kns_pf_prefix || exit 1
+  local forwards_key="${_kns_pf_key_prefix}FORWARDS"
+  local default_key="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+  local forward_key="${_kns_pf_key_prefix}FORWARD_${name}"
+  local target_key="${forward_key}_TARGET"
+  local forwards default current found=""
+  forwards=$(_kns_conf_read_key "$_kns_pf_file" "$forwards_key")
+  default=$(_kns_conf_read_key "$_kns_pf_file" "$default_key")
+
+  _kns_conf_upsert "$_kns_pf_file" "$forward_key" "$ports"
+  if [[ -n "$target" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$target_key" "$target"
+  else
+    _kns_conf_delete_key "$_kns_pf_file" "$target_key"
+  fi
+
+  for current in $forwards; do
+    if [[ "$current" == "$name" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ -z "$found" ]]; then
+    forwards="${forwards:+$forwards }$name"
+    _kns_conf_upsert "$_kns_pf_file" "$forwards_key" "$forwards"
+  fi
+  if [[ -z "$default" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$default_key" "$name"
+  fi
+}
+
+cmd_pf_unset() {
+  local name="${1:-}"
+  if [[ $# -ne 1 ]] || ! _kns_valid_forward_name "$name"; then
+    echo "Usage: kns pf unset <name>" >&2
+    exit 1
+  fi
+
+  _kns_pf_prefix || exit 1
+  local forwards_key="${_kns_pf_key_prefix}FORWARDS"
+  local default_key="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+  local forward_key="${_kns_pf_key_prefix}FORWARD_${name}"
+  local forwards default current remaining=""
+  forwards=$(_kns_conf_read_key "$_kns_pf_file" "$forwards_key")
+  default=$(_kns_conf_read_key "$_kns_pf_file" "$default_key")
+
+  _kns_conf_delete_key "$_kns_pf_file" "$forward_key"
+  _kns_conf_delete_key "$_kns_pf_file" "${forward_key}_TARGET"
+  for current in $forwards; do
+    [[ "$current" == "$name" ]] && continue
+    remaining="${remaining:+$remaining }$current"
+  done
+  if [[ -n "$remaining" ]]; then
+    _kns_conf_upsert "$_kns_pf_file" "$forwards_key" "$remaining"
+  else
+    _kns_conf_delete_key "$_kns_pf_file" "$forwards_key"
+  fi
+
+  if [[ "$default" == "$name" ]]; then
+    if [[ -n "$remaining" ]]; then
+      _kns_conf_upsert "$_kns_pf_file" "$default_key" "${remaining%% *}"
+    else
+      _kns_conf_delete_key "$_kns_pf_file" "$default_key"
+    fi
+  fi
+}
+
+_kns_pf_resolve() {
+  if [[ $# -gt 2 ]]; then
+    echo "Usage: kns pf [name|ports] [target]" >&2
+    return 1
+  fi
+
+  _kns_resolve_effective_pins || true
+  _kns_pf_prefix || return 1
+
+  local value="${1:-}"
+  local cli_target="${2:-}"
+  local mapping_target=""
+  _kns_pf_ports=""
+  _kns_pf_target=""
+  _kns_pf_mapping=""
+
+  if [[ -z "$value" ]]; then
+    local default_var="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+    value="${!default_var:-}"
+    if [[ -z "$value" ]]; then
+      echo "Error: No ports specified. Pass ports or configure a default with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+  fi
+
+  if _kns_is_ports_arg "$value"; then
+    _kns_pf_ports="$value"
+  else
+    if ! _kns_valid_forward_name "$value"; then
+      echo "Error: Forward mapping '$value' not found. Add it with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+    _kns_pf_mapping="$value"
+    local ports_var="${_kns_pf_key_prefix}FORWARD_${value}"
+    local target_var="${ports_var}_TARGET"
+    _kns_pf_ports="${!ports_var:-}"
+    mapping_target="${!target_var:-}"
+    if [[ -z "$_kns_pf_ports" ]]; then
+      echo "Error: Forward mapping '$value' not found. Add it with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+  fi
+
+  if [[ -n "$cli_target" ]]; then
+    _kns_pf_target="$cli_target"
+  elif [[ -n "$mapping_target" ]]; then
+    _kns_pf_target="$mapping_target"
+  elif [[ -n "${_kns_pin_pod:-}" ]]; then
+    _kns_pf_target="pod/$_kns_pin_pod"
+  elif [[ -n "${_kns_pin_service:-}" ]]; then
+    _kns_pf_target="svc/$_kns_pin_service"
+  else
+    echo "Error: No port-forward target. Pass a target or use 'kns pod set <pod-name>' / 'kns service set <service-name>'." >&2
+    return 1
+  fi
+}
+
+cmd_pf_run() {
+  auto_switch_context mutate || exit 1
+  _kns_pf_resolve "$@" || exit 1
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl port-forward -n "$_kns_pin_ns" "$_kns_pf_target" "$_kns_pf_ports"
+  else
+    kubectl port-forward "$_kns_pf_target" "$_kns_pf_ports"
+  fi
+}
+
+_kns_pf_record_load() {
+  local record="$1"
+  KNS_PF_ID=""
+  KNS_PF_PID=""
+  KNS_PF_ROOT=""
+  KNS_PF_ENV=""
+  KNS_PF_NAME=""
+  KNS_PF_PORTS=""
+  KNS_PF_TARGET=""
+  KNS_PF_CONTEXT=""
+  KNS_PF_NAMESPACE=""
+  KNS_PF_STARTED=""
+  KNS_PF_LOG=""
+  # shellcheck disable=SC1090
+  source "$record" 2>/dev/null || return 1
+  [[ -n "$KNS_PF_ID" && "$KNS_PF_PID" =~ ^[0-9]+$ && -n "$KNS_PF_ROOT" ]]
+}
+
+_kns_pf_scope() {
+  _kns_pf_prefix || return 1
+  _kns_pf_scope_root=$(_kns_project_root)
+  _kns_pf_scope_env=""
+  if _kns_is_multi_env; then
+    _kns_pf_scope_env="$_kns_session_env"
+  fi
+}
+
+_kns_pf_record_in_scope() {
+  [[ ("$KNS_PF_ROOT" == "$_kns_pf_scope_root" ||
+    "$PWD" == "$KNS_PF_ROOT" || "$PWD" == "$KNS_PF_ROOT"/*) &&
+    "$KNS_PF_ENV" == "$_kns_pf_scope_env" ]]
+}
+
+_kns_pf_local_port() {
+  echo "${1%%:*}"
+}
+
+_kns_pf_write_record() {
+  local record="$1"
+  {
+    printf 'KNS_PF_ID=%q\n' "$KNS_PF_ID"
+    printf 'KNS_PF_PID=%q\n' "$KNS_PF_PID"
+    printf 'KNS_PF_ROOT=%q\n' "$KNS_PF_ROOT"
+    printf 'KNS_PF_ENV=%q\n' "$KNS_PF_ENV"
+    printf 'KNS_PF_NAME=%q\n' "$KNS_PF_NAME"
+    printf 'KNS_PF_PORTS=%q\n' "$KNS_PF_PORTS"
+    printf 'KNS_PF_TARGET=%q\n' "$KNS_PF_TARGET"
+    printf 'KNS_PF_CONTEXT=%q\n' "$KNS_PF_CONTEXT"
+    printf 'KNS_PF_NAMESPACE=%q\n' "$KNS_PF_NAMESPACE"
+    printf 'KNS_PF_STARTED=%q\n' "$KNS_PF_STARTED"
+    printf 'KNS_PF_LOG=%q\n' "$KNS_PF_LOG"
+  } > "$record"
+}
+
+_kns_pf_delete_record() {
+  local record="$1"
+  rm -f "${KNS_PF_LOG:-}" "$record"
+}
+
+cmd_pf_start() {
+  auto_switch_context mutate || exit 1
+  _kns_pf_resolve "$@" || exit 1
+  _kns_pf_scope || exit 1
+
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local logs_dir="$pf_dir/logs"
+  local local_port
+  local_port=$(_kns_pf_local_port "$_kns_pf_ports")
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    if ! _kns_pf_record_load "$record"; then
+      continue
+    fi
+    _kns_pf_record_in_scope || continue
+    if ! kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      _kns_pf_delete_record "$record"
+      continue
+    fi
+    if [[ $(_kns_pf_local_port "$KNS_PF_PORTS") == "$local_port" ]]; then
+      echo "Error: local port $local_port already has a background forward. Use 'kns pf list' or 'kns pf stop' first." >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "$logs_dir"
+  local id="pf_$(date +%s)_$$_${RANDOM}"
+  local log="$logs_dir/$id.log"
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl port-forward -n "$_kns_pin_ns" "$_kns_pf_target" "$_kns_pf_ports" >"$log" 2>&1 &
+  else
+    kubectl port-forward "$_kns_pf_target" "$_kns_pf_ports" >"$log" 2>&1 &
+  fi
+  local pid=$!
+
+  KNS_PF_ID="$id"
+  KNS_PF_PID="$pid"
+  KNS_PF_ROOT="$_kns_pf_scope_root"
+  KNS_PF_ENV="$_kns_pf_scope_env"
+  KNS_PF_NAME="$_kns_pf_mapping"
+  KNS_PF_PORTS="$_kns_pf_ports"
+  KNS_PF_TARGET="$_kns_pf_target"
+  KNS_PF_CONTEXT="${_kns_pin_ctx:-}"
+  KNS_PF_NAMESPACE="${_kns_pin_ns:-}"
+  KNS_PF_STARTED="$(date +%s)"
+  KNS_PF_LOG="$log"
+  record="$pf_dir/$id.env"
+  _kns_pf_write_record "$record"
+
+  sleep 0.2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Error: port-forward failed to start:" >&2
+    tail -n 20 "$log" >&2 || true
+    _kns_pf_delete_record "$record"
+    exit 1
+  fi
+  echo "Started ${_kns_pf_mapping:-$_kns_pf_ports} ($id, pid $pid)"
+}
+
+cmd_pf_list() {
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: kns pf list" >&2
+    exit 1
+  fi
+  _kns_pf_scope || exit 1
+
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record status
+  printf '%-28s %-16s %-13s %-24s %s\n' "ID" "NAME" "PORTS" "TARGET" "STATUS"
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    _kns_pf_record_in_scope || continue
+    status="running"
+    if ! kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      status="dead"
+    fi
+    printf '%-28s %-16s %-13s %-24s %s\n' \
+      "$KNS_PF_ID" "${KNS_PF_NAME:--}" "$KNS_PF_PORTS" "$KNS_PF_TARGET" "$status"
+    if [[ "$status" == "dead" ]]; then
+      _kns_pf_delete_record "$record"
+    fi
+  done
+}
+
+cmd_pf_stop() {
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: kns pf stop [name|id|all]" >&2
+    exit 1
+  fi
+  _kns_pf_scope || exit 1
+
+  local selector="${1:-all}"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record matched=0
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    _kns_pf_record_in_scope || continue
+    if [[ "$selector" != "all" && "$selector" != "$KNS_PF_ID" &&
+      "$selector" != "$KNS_PF_NAME" ]]; then
+      continue
+    fi
+    matched=1
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    _kns_pf_delete_record "$record"
+    echo "Stopped ${KNS_PF_NAME:-$KNS_PF_ID}"
+  done
+  if [[ $matched -eq 0 ]]; then
+    echo "Error: no background port-forward matched '$selector'." >&2
+    exit 1
+  fi
+}
+
+_kns_pf_cleanup_left() {
+  local current="${1:-$PWD}"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    if [[ "$current" == "$KNS_PF_ROOT" || "$current" == "$KNS_PF_ROOT"/* ]]; then
+      continue
+    fi
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    _kns_pf_delete_record "$record"
+  done
+}
+
+_kns_pf_stop_env() {
+  local root="$1"
+  local env="$2"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    if [[ "$KNS_PF_ROOT" != "$root" || "$KNS_PF_ENV" != "$env" ]]; then
+      continue
+    fi
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    _kns_pf_delete_record "$record"
+  done
+}
+
+cmd_pf() {
+  local sub="${1:-}"
+  case "$sub" in
+    set) shift; cmd_pf_set "$@" ;;
+    unset) shift; cmd_pf_unset "$@" ;;
+    start) shift; cmd_pf_start "$@" ;;
+    stop) shift; cmd_pf_stop "$@" ;;
+    list) shift; cmd_pf_list "$@" ;;
+    *) cmd_pf_run "$@" ;;
+  esac
+}
+
 cmd_container() {
   local sub="${1:-}"
   shift || true
@@ -1121,6 +1602,71 @@ cmd_set_pod() {
   } > "$file"
 
   echo "Set current pod: $pod"
+}
+
+# Set current service
+cmd_set_service() {
+  local service="${1:-}"
+
+  if [[ -z "$service" || $# -ne 1 ]]; then
+    echo "Usage: kns service set <service-name>" >&2
+    exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    auto_switch_context
+    if ! kubectl get svc "$service" >/dev/null 2>&1; then
+      echo "Error: Service '$service' not found" >&2
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_SERVICE" "$service"
+    echo "Set current service: $service"
+    return 0
+  fi
+
+  local file="$PWD/$KNS_LOCAL_FILE"
+  auto_switch_context
+  if ! kubectl get svc "$service" >/dev/null 2>&1; then
+    echo "Error: Service '$service' not found" >&2
+    exit 1
+  fi
+  _kns_conf_upsert "$file" KNS_SERVICE "$service"
+  echo "Set current service: $service"
+}
+
+cmd_unset_service() {
+  if [[ $# -gt 0 ]]; then
+    echo "Usage: kns service unset" >&2
+    exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_SERVICE"
+    echo "Unset service for $(pwd)"
+    return 0
+  fi
+
+  local file="$PWD/$KNS_LOCAL_FILE"
+  _kns_conf_delete_key "$file" KNS_SERVICE
+  echo "Unset service for $(pwd)"
 }
 
 # Set current container
@@ -1632,7 +2178,7 @@ cmd_shell() {
 # --- Shell completion -------------------------------------------------------
 
 _kns_top_commands() {
-  printf '%s\n' set show use list unset env pods svc deploy namespaces pod container containers exec cp sh help completion
+  printf '%s\n' set show use list unset env pods svc deploy namespaces pod service pf container containers exec cp sh help completion
 }
 
 _kns_resolve_active() {
@@ -1650,6 +2196,27 @@ _kns_resolve_active() {
 
 _kns_kubectl_complete() {
   kubectl --request-timeout=2s "$@" 2>/dev/null || true
+}
+
+_kns_complete_scoped_names() {
+  local resource="$1"
+  local prefix="${2:-}"
+  _kns_resolve_active
+  local -a args=()
+  [[ -n "$_kns_ctx" ]] && args+=(--context="$_kns_ctx")
+  [[ -n "$_kns_ns" ]] && args+=(-n "$_kns_ns")
+  args+=(get "$resource" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && printf '%s%s\n' "$prefix" "$name"
+  done < <(_kns_kubectl_complete "${args[@]}")
+}
+
+_kns_complete_pf_targets() {
+  _kns_complete_scoped_names pods pod/
+  _kns_complete_scoped_names services svc/
+  _kns_complete_scoped_names deployments deploy/
 }
 
 _kns_complete_live() {
@@ -1682,6 +2249,19 @@ _kns_complete_live() {
         [[ -n "$_kns_ctx" ]] && args=(--context="$_kns_ctx" "${args[@]}")
         [[ -n "$_kns_ns" ]] && args=(-n "$_kns_ns" "${args[@]}")
         _kns_kubectl_complete "${args[@]}"
+      fi
+      ;;
+    service)
+      if [[ $n -eq 3 && "${words[1]}" == "set" ]]; then
+        _kns_complete_scoped_names services
+      fi
+      ;;
+    pf)
+      if [[ $n -eq 3 && "${words[1]}" != "start" && "${words[1]}" != "stop" &&
+        "${words[1]}" != "list" && "${words[1]}" != "set" && "${words[1]}" != "unset" ]] ||
+        [[ $n -eq 4 && "${words[1]}" == "start" ]] ||
+        [[ $n -eq 5 && "${words[1]}" == "set" ]]; then
+        _kns_complete_pf_targets
       fi
       ;;
     container)
@@ -1723,6 +2303,33 @@ cmd___complete() {
         printf '%s\n' set unset
       elif [[ $n -eq 3 && "$cmd" == "pod" && "${words[1]}" == "unset" ]]; then
         printf '%s\n' -c
+      fi
+      ;;
+    service)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' set unset
+      fi
+      ;;
+    pf)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' start stop list set unset
+        if _kns_pf_prefix 2>/dev/null; then
+          local forwards_var="${_kns_pf_key_prefix}FORWARDS"
+          # shellcheck disable=SC2086
+          printf '%s\n' ${!forwards_var:-}
+        fi
+      elif [[ $n -eq 3 && "${words[1]}" == "stop" ]]; then
+        printf '%s\n' all
+        if _kns_pf_scope 2>/dev/null; then
+          local record
+          for record in "$KNS_CONFIG_DIR"/pf/*.env; do
+            [[ -f "$record" ]] || continue
+            _kns_pf_record_load "$record" || continue
+            _kns_pf_record_in_scope || continue
+            [[ -n "$KNS_PF_NAME" ]] && printf '%s\n' "$KNS_PF_NAME"
+            printf '%s\n' "$KNS_PF_ID"
+          done
+        fi
       fi
       ;;
     completion)
@@ -2018,6 +2625,16 @@ KUBECTL SHORTCUTS:
 POD DEBUG:
     pod set <pod-name>           Set current pod for this directory
     pod unset [-c]               Unset local pod (-c also unsets container)
+    service set <service-name>   Set default service for port-forwarding
+    service unset                Unset the default service
+    pf [name|ports] [target]     Run a foreground port-forward
+    pf start [name|ports] [target]
+                                 Start a background port-forward
+    pf list                      List background port-forwards
+    pf stop [name|id|all]        Stop background port-forward(s)
+    pf set <name> <ports> [target]
+                                 Save a named port mapping
+    pf unset <name>              Remove a named port mapping
     container set <name>         Set current container (requires pod)
     container unset              Unset local container
     containers                   List containers of current pod
@@ -2033,6 +2650,11 @@ EXAMPLES:
     kns use staging-cluster staging
     kns pods
     kns pod set my-pod-123
+    kns service set my-api
+    kns pf set app 8080:80
+    kns pf start app
+    kns pf list
+    kns pf stop app
     kns container set app
     kns containers
     kns exec ls -la /tmp
@@ -2050,6 +2672,8 @@ CONFIGURATION:
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
+      - KNS_SERVICE: Default service for port-forwarding (optional)
+      - KNS_FORWARDS / KNS_FORWARD_<name>: Named port mappings (optional)
 
     Named environments (multi-env): when KNS_ENVS is set, flat KNS_CONTEXT /
     KNS_NAMESPACE keys in the same merge are ignored. Per-environment keys:

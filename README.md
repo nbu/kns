@@ -218,6 +218,34 @@ All shortcuts automatically switch context based on `.kns.conf` before executing
   kns pod unset -c
   ```
 
+- `kns service set <service-name>` / `kns service unset` - Set or clear the default service for port-forwarding
+  ```bash
+  kns service set my-api
+  ```
+
+- `kns pf [name|ports] [target]` - Run a foreground port-forward using a named mapping or literal ports
+  ```bash
+  kns pf 8080:8080                 # Uses the pinned pod or service
+  kns pf 8080:80 svc/my-api        # Explicit pod/, svc/, or deploy/ target
+  ```
+
+- `kns pf set <name> <ports> [target]` / `kns pf unset <name>` - Save or remove a named port mapping
+  ```bash
+  kns pf set app 8080:80 svc/my-api
+  kns pf app
+  ```
+
+- `kns pf start [name|ports] [target]` - Start a port-forward in the background
+- `kns pf list` - List background port-forwards for the current project and environment
+- `kns pf stop [name|id|all]` - Stop matching background port-forwards
+  ```bash
+  kns pf start app
+  kns pf list
+  kns pf stop app
+  ```
+
+Background port-forwards stop automatically when you leave the project directory tree or switch named environments. Leave cleanup uses the shared runtime registry and is global across shells, so changing directory in one shell can stop a forward started for another project in a different shell.
+
 - `kns container set <container-name>` - Set current container (requires pod)
   ```bash
   kns container set my-container
@@ -347,6 +375,24 @@ Breaking rename (no shims). Old names print a redirect hint:
 
 You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is merged like project `.kns.conf` files (parent → child; child wins). If your current path is under `$HOME`, the home file is included only once.
 
+### Project keys
+
+Alongside `KNS_CONTEXT`, `KNS_NAMESPACE`, `KNS_POD`, and `KNS_CONTAINER`, a project can pin a default service with `KNS_SERVICE`. Named port mappings use:
+
+```bash
+KNS_SERVICE="my-api"
+KNS_FORWARDS="app metrics"
+KNS_FORWARD_DEFAULT="app"
+KNS_FORWARD_app="8080:80"
+KNS_FORWARD_app_TARGET="svc/my-api"
+KNS_FORWARD_metrics="9090:9090"
+KNS_FORWARD_metrics_TARGET="deploy/metrics"
+```
+
+`KNS_FORWARDS` is the space-separated mapping list. Each `KNS_FORWARD_<name>` stores ports, its optional `_TARGET` overrides the pinned pod or service, and `KNS_FORWARD_DEFAULT` selects the mapping used by bare `kns pf`.
+
+For named environments, use the same keys under the environment prefix: `KNS_ENV_<name>_SERVICE`, `KNS_ENV_<name>_FORWARDS`, `KNS_ENV_<name>_FORWARD_<mapping>`, `KNS_ENV_<name>_FORWARD_<mapping>_TARGET`, and `KNS_ENV_<name>_FORWARD_DEFAULT`.
+
 ### Runtime configuration directory
 
 `KNS_CONFIG_DIR` (default: `~/.kns`) stores runtime and global state:
@@ -354,6 +400,7 @@ You can set defaults for any directory under `$HOME` with `~/.kns.conf`. It is m
 - `manual_override` — the temporary context selected by `kns use`
 - `active_env` — the active named-environment session
 - `config` — global settings such as `prompt_on_enter`
+- `pf/` — background port-forward registry records and logs
 
 To use another location:
 
