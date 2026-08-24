@@ -152,10 +152,124 @@ EOF
   done
 }
 
+test_pf_foreground_pod() {
+  local dir="$TMP/pf-fg-pod"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_NAMESPACE="ns"
+KNS_POD="web-0"
+KNS_CONTAINER="web"
+KNS_FORWARDS="app"
+KNS_FORWARD_DEFAULT="app"
+KNS_FORWARD_app="8080:8080"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf app"
+  grep -q '^port-forward -n ns pod/web-0 8080:8080$' "$dir/kubectl.log" ||
+    fail "expected foreground port-forward to pinned pod"
+  grep -q 'port-forward.* -c ' "$dir/kubectl.log" &&
+    fail "port-forward must not pass a container" || true
+}
+
+test_pf_foreground_explicit_service() {
+  local dir="$TMP/pf-fg-explicit"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_NAMESPACE="ns"
+KNS_POD="web-0"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf 9090:80 svc/my-api"
+  grep -q '^port-forward -n ns svc/my-api 9090:80$' "$dir/kubectl.log" ||
+    fail "explicit service target should override pinned pod"
+}
+
+test_pf_foreground_mapping_target() {
+  local dir="$TMP/pf-fg-mapping-target"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_POD="web-0"
+KNS_FORWARDS="api"
+KNS_FORWARD_api="8080:80"
+KNS_FORWARD_api_TARGET="deploy/api"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf api"
+  grep -q '^port-forward deploy/api 8080:80$' "$dir/kubectl.log" ||
+    fail "mapping target should override pinned pod"
+}
+
+test_pf_foreground_default_service() {
+  local dir="$TMP/pf-fg-default-service"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_SERVICE="my-api"
+KNS_FORWARDS="api"
+KNS_FORWARD_DEFAULT="api"
+KNS_FORWARD_api="8080:80"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf"
+  grep -q '^port-forward svc/my-api 8080:80$' "$dir/kubectl.log" ||
+    fail "bare pf should use default mapping and pinned service"
+}
+
+test_pf_foreground_requires_ports() {
+  local dir="$TMP/pf-fg-no-ports"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_POD="web-0"
+EOF
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf" \
+    >"$dir/output" 2>&1; then
+    fail "pf without ports or default mapping should fail"
+  fi
+  grep -q 'kns pf set' "$dir/output" || fail "missing pf set hint"
+}
+
+test_pf_foreground_requires_target() {
+  local dir="$TMP/pf-fg-no-target"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+EOF
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf 8080:80" \
+    >"$dir/output" 2>&1; then
+    fail "pf without a target pin should fail"
+  fi
+  grep -q 'pod set' "$dir/output" || fail "missing pod set hint"
+  grep -q 'service set' "$dir/output" || fail "missing service set hint"
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
 test_service_multi_rejects_stale_session
 test_pf_set_unset_single
 test_pf_rejects_reserved_names
+test_pf_foreground_pod
+test_pf_foreground_explicit_service
+test_pf_foreground_mapping_target
+test_pf_foreground_default_service
+test_pf_foreground_requires_ports
+test_pf_foreground_requires_target
 echo "OK (partial — more tests added in later tasks)"

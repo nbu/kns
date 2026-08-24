@@ -1057,6 +1057,36 @@ _kns_is_ports_arg() {
   [[ "$1" =~ ^[0-9]+(:[0-9]+)?$ ]]
 }
 
+_kns_project_root() {
+  _kns_source_merged_conf || {
+    echo "$PWD"
+    return 0
+  }
+
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if [[ -n "$owner" ]]; then
+      echo "$owner"
+      return 0
+    fi
+  fi
+
+  local home_file="$HOME/$KNS_LOCAL_FILE"
+  local file
+  for file in "${_kns_conf_files[@]+"${_kns_conf_files[@]}"}"; do
+    if [[ "$file" != "$home_file" ]]; then
+      dirname "$file"
+      return 0
+    fi
+  done
+  if [[ -f "$home_file" ]]; then
+    dirname "$home_file"
+  else
+    echo "$PWD"
+  fi
+}
+
 _kns_pf_prefix() {
   _kns_source_merged_conf || true
   if _kns_is_multi_env; then
@@ -1153,9 +1183,71 @@ cmd_pf_unset() {
   fi
 }
 
+_kns_pf_resolve() {
+  if [[ $# -gt 2 ]]; then
+    echo "Usage: kns pf [name|ports] [target]" >&2
+    return 1
+  fi
+
+  _kns_resolve_effective_pins || true
+  _kns_pf_prefix || return 1
+
+  local value="${1:-}"
+  local cli_target="${2:-}"
+  local mapping_target=""
+  _kns_pf_ports=""
+  _kns_pf_target=""
+  _kns_pf_mapping=""
+
+  if [[ -z "$value" ]]; then
+    local default_var="${_kns_pf_key_prefix}FORWARD_DEFAULT"
+    value="${!default_var:-}"
+    if [[ -z "$value" ]]; then
+      echo "Error: No ports specified. Pass ports or configure a default with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+  fi
+
+  if _kns_is_ports_arg "$value"; then
+    _kns_pf_ports="$value"
+  else
+    if ! _kns_valid_forward_name "$value"; then
+      echo "Error: Forward mapping '$value' not found. Add it with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+    _kns_pf_mapping="$value"
+    local ports_var="${_kns_pf_key_prefix}FORWARD_${value}"
+    local target_var="${ports_var}_TARGET"
+    _kns_pf_ports="${!ports_var:-}"
+    mapping_target="${!target_var:-}"
+    if [[ -z "$_kns_pf_ports" ]]; then
+      echo "Error: Forward mapping '$value' not found. Add it with 'kns pf set <name> <ports> [target]'." >&2
+      return 1
+    fi
+  fi
+
+  if [[ -n "$cli_target" ]]; then
+    _kns_pf_target="$cli_target"
+  elif [[ -n "$mapping_target" ]]; then
+    _kns_pf_target="$mapping_target"
+  elif [[ -n "${_kns_pin_pod:-}" ]]; then
+    _kns_pf_target="pod/$_kns_pin_pod"
+  elif [[ -n "${_kns_pin_service:-}" ]]; then
+    _kns_pf_target="svc/$_kns_pin_service"
+  else
+    echo "Error: No port-forward target. Pass a target or use 'kns pod set <pod-name>' / 'kns service set <service-name>'." >&2
+    return 1
+  fi
+}
+
 cmd_pf_run() {
-  echo "Error: kns pf run not implemented yet" >&2
-  exit 1
+  auto_switch_context mutate || exit 1
+  _kns_pf_resolve "$@" || exit 1
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl port-forward -n "$_kns_pin_ns" "$_kns_pf_target" "$_kns_pf_ports"
+  else
+    kubectl port-forward "$_kns_pf_target" "$_kns_pf_ports"
+  fi
 }
 
 cmd_pf() {
