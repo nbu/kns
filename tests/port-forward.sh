@@ -270,6 +270,18 @@ wait_for_dead() {
   ! kill -0 "$pid" 2>/dev/null
 }
 
+make_sleeping_kubectl() {
+  mkdir -p "$1/bin"
+  cat > "$1/bin/kubectl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "port-forward" ]]; then
+  exec sleep 120
+fi
+exit 0
+EOF
+  chmod +x "$1/bin/kubectl"
+}
+
 test_pf_bg_lifecycle() {
   local dir="$TMP/pf-bg"
   mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
@@ -370,6 +382,64 @@ EOF
   [[ ! -e "$dir/cfg/pf/stale-stop.env" ]] || fail "stop did not clean stale record"
 }
 
+test_pf_leave_stops() {
+  local dir="$TMP/pf-leave"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/outside"
+  make_sleeping_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_POD="web-0"
+EOF
+
+  local record pid
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$ROOT:$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf start 18080:8080"
+  record=$(printf '%s\n' "$dir/cfg"/pf/*.env)
+  # shellcheck disable=SC1090
+  source "$record"
+  pid="$KNS_PF_PID"
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$ROOT:$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && source '$ROOT/kns.sh' && builtin cd '$dir/outside' && kns_apply_dir_context"
+  if [[ -e "$record" ]] || ! wait_for_dead "$pid"; then
+    kill "$pid" 2>/dev/null || true
+    rm -f "$record"
+    fail "leaving project did not stop background port-forward"
+  fi
+}
+
+test_pf_env_switch_stops() {
+  local dir="$TMP/pf-env-switch"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_sleeping_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage prod"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+KNS_ENV_stage_POD="stage-web-0"
+KNS_ENV_prod_CONTEXT="prod-ctx"
+KNS_ENV_prod_POD="prod-web-0"
+EOF
+  cat > "$dir/cfg/active_env" <<EOF
+KNS_SESSION_ROOT="$dir/proj"
+KNS_SESSION_ENV="stage"
+EOF
+
+  local record pid
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf start 18081:8080"
+  record=$(printf '%s\n' "$dir/cfg"/pf/*.env)
+  # shellcheck disable=SC1090
+  source "$record"
+  pid="$KNS_PF_PID"
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' env prod"
+  if [[ -e "$record" ]] || ! wait_for_dead "$pid"; then
+    kill "$pid" 2>/dev/null || true
+    rm -f "$record"
+    fail "environment switch did not stop prior environment port-forward"
+  fi
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
@@ -384,4 +454,6 @@ test_pf_foreground_requires_ports
 test_pf_foreground_requires_target
 test_pf_bg_lifecycle
 test_pf_bg_cleans_stale_records
+test_pf_env_switch_stops
+test_pf_leave_stops
 echo "OK (partial — more tests added in later tasks)"

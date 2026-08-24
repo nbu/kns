@@ -261,6 +261,10 @@ kns_apply_dir_context() {
     kns_session_clear
   fi
 
+  if command -v kns >/dev/null 2>&1; then
+    kns __pf_cleanup_left >/dev/null 2>&1 || true
+  fi
+
   unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
     KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
   kns_conf_files=()

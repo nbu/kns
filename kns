@@ -134,6 +134,9 @@ main() {
     __complete)
       cmd___complete "$@"
       ;;
+    __pf_cleanup_left)
+      _kns_pf_cleanup_left
+      ;;
     help|--help|-h)
       show_help
       ;;
@@ -541,6 +544,10 @@ cmd_env_use() {
   owner=$(_kns_envs_owner_dir || true)
   [[ -n "$owner" ]] || return 1
   _kns_kubectl_apply_pins || return 1
+  if _kns_session_read && [[ "$_kns_session_root" == "$owner" &&
+    "$_kns_session_env" != "$name" ]]; then
+    _kns_pf_stop_env "$owner" "$_kns_session_env"
+  fi
   _kns_session_write "$owner" "$name"
   echo "Switched to environment: $name"
   echo "  Context: $_kns_pin_ctx"
@@ -1428,6 +1435,24 @@ _kns_pf_cleanup_left() {
     [[ -f "$record" ]] || continue
     _kns_pf_record_load "$record" || continue
     if [[ "$current" == "$KNS_PF_ROOT" || "$current" == "$KNS_PF_ROOT"/* ]]; then
+      continue
+    fi
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    rm -f "$record"
+  done
+}
+
+_kns_pf_stop_env() {
+  local root="$1"
+  local env="$2"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    if [[ "$KNS_PF_ROOT" != "$root" || "$KNS_PF_ENV" != "$env" ]]; then
       continue
     fi
     if kill -0 "$KNS_PF_PID" 2>/dev/null; then
