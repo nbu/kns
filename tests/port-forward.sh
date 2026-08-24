@@ -36,5 +36,89 @@ EOF
   grep -q KNS_SERVICE "$dir/proj/.kns.conf" && fail "service should be removed" || true
 }
 
+test_service_set_multi() {
+  local dir="$TMP/svc-multi"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage prod"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+KNS_ENV_prod_CONTEXT="prod-ctx"
+EOF
+  cat > "$dir/cfg/active_env" <<EOF
+KNS_SESSION_ROOT="$dir/proj"
+KNS_SESSION_ENV="stage"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' service set my-api"
+  grep -q 'KNS_ENV_stage_SERVICE="my-api"' "$dir/proj/.kns.conf" ||
+    fail "multi-env service not written with active env prefix"
+  grep -q '^KNS_SERVICE=' "$dir/proj/.kns.conf" &&
+    fail "multi-env service should not write flat key"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' service unset"
+  grep -q KNS_ENV_stage_SERVICE "$dir/proj/.kns.conf" &&
+    fail "multi-env service should be removed" || true
+}
+
+test_service_multi_rejects_no_session() {
+  local dir="$TMP/svc-no-session"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+EOF
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' service set my-api" \
+    >"$dir/output" 2>&1; then
+    fail "multi-env service set without session should fail"
+  fi
+  grep -q "select an environment first" "$dir/output" ||
+    fail "missing no-session error"
+  grep -q KNS_ENV_stage_SERVICE "$dir/proj/.kns.conf" &&
+    fail "no-session service set changed config" || true
+}
+
+test_service_multi_rejects_stale_session() {
+  local dir="$TMP/svc-stale-session"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_ENVS="stage"
+KNS_DEFAULT_ENV="stage"
+KNS_ENV_stage_CONTEXT="stage-ctx"
+KNS_ENV_removed_SERVICE="old-api"
+EOF
+  cat > "$dir/cfg/active_env" <<EOF
+KNS_SESSION_ROOT="$dir/proj"
+KNS_SESSION_ENV="removed"
+EOF
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' service set my-api" \
+    >"$dir/set-output" 2>&1; then
+    fail "multi-env service set with stale session should fail"
+  fi
+  grep -q 'KNS_ENV_removed_SERVICE="old-api"' "$dir/proj/.kns.conf" ||
+    fail "stale-session service set changed config"
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' service unset" \
+    >"$dir/unset-output" 2>&1; then
+    fail "multi-env service unset with stale session should fail"
+  fi
+  grep -q 'KNS_ENV_removed_SERVICE="old-api"' "$dir/proj/.kns.conf" ||
+    fail "stale-session service unset changed config"
+}
+
 test_service_set_single
+test_service_set_multi
+test_service_multi_rejects_no_session
+test_service_multi_rejects_stale_session
 echo "OK (partial — more tests added in later tasks)"

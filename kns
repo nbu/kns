@@ -1165,7 +1165,8 @@ cmd_set_service() {
   if _kns_is_multi_env; then
     local owner
     owner=$(_kns_envs_owner_dir) || true
-    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
       echo "Error: select an environment first (kns env <name>)." >&2
       exit 1
     fi
@@ -1200,7 +1201,8 @@ cmd_unset_service() {
   if _kns_is_multi_env; then
     local owner
     owner=$(_kns_envs_owner_dir) || true
-    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]] ||
+      ! _kns_pwd_under_root "$owner" || ! _kns_env_in_list "$_kns_session_env"; then
       echo "Error: select an environment first (kns env <name>)." >&2
       exit 1
     fi
