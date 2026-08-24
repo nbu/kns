@@ -59,6 +59,9 @@ main() {
     show)
       cmd_show "$@"
       ;;
+    env)
+      cmd_env "$@"
+      ;;
     use)
       cmd_use "$@"
       ;;
@@ -171,7 +174,12 @@ _kns_collect_conf_files() {
 
 # Unset kns vars; source collected files farthest → closest (child wins).
 _kns_source_merged_conf() {
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER
+  local env_var
+  for env_var in ${!KNS_ENV_@}; do
+    unset "$env_var"
+  done
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
+    KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
   if ! _kns_collect_conf_files; then
     return 1
   fi
@@ -183,6 +191,611 @@ _kns_source_merged_conf() {
     fi
   done
   return 0
+}
+
+KNS_SESSION_FILE="${KNS_SESSION_FILE:-$KNS_CONFIG_DIR/active_env}"
+KNS_GLOBAL_CONFIG_FILE="${KNS_GLOBAL_CONFIG_FILE:-$KNS_CONFIG_DIR/config}"
+
+_kns_is_multi_env() {
+  [[ -n "${KNS_ENVS:-}" ]]
+}
+
+_kns_valid_env_name() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+_kns_reserved_env_name() {
+  case "$1" in
+    list|show|add|remove|default|prompt) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_kns_env_pins() {
+  local name="$1"
+  local ctx_var ns_var pod_var ctr_var
+  _kns_pin_ctx=""
+  _kns_pin_ns=""
+  _kns_pin_pod=""
+  _kns_pin_container=""
+  if ! _kns_valid_env_name "$name"; then
+    echo "Error: Invalid environment name '$name'. Use letters, digits, and underscores; the first character cannot be a digit." >&2
+    return 1
+  fi
+  ctx_var="KNS_ENV_${name}_CONTEXT"
+  ns_var="KNS_ENV_${name}_NAMESPACE"
+  pod_var="KNS_ENV_${name}_POD"
+  ctr_var="KNS_ENV_${name}_CONTAINER"
+  _kns_pin_ctx="${!ctx_var:-}"
+  _kns_pin_ns="${!ns_var:-}"
+  _kns_pin_pod="${!pod_var:-}"
+  _kns_pin_container="${!ctr_var:-}"
+  [[ -n "$_kns_pin_ctx" ]]
+}
+
+_kns_envs_owner_dir() {
+  local f dir
+  for f in "${_kns_conf_files[@]+"${_kns_conf_files[@]}"}"; do
+    dir=$(
+      # shellcheck disable=SC1090
+      unset KNS_ENVS
+      source "$f" 2>/dev/null || true
+      if [[ -n "${KNS_ENVS:-}" ]]; then
+        dirname "$f"
+      fi
+    )
+    if [[ -n "$dir" ]]; then
+      echo "$dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_kns_session_clear() {
+  rm -f "$KNS_SESSION_FILE"
+}
+
+_kns_session_write() {
+  local root="$1"
+  local env="$2"
+  mkdir -p "$KNS_CONFIG_DIR"
+  cat > "$KNS_SESSION_FILE" <<EOF
+KNS_SESSION_ROOT="$root"
+KNS_SESSION_ENV="$env"
+EOF
+}
+
+_kns_session_read() {
+  _kns_session_root=""
+  _kns_session_env=""
+  [[ -f "$KNS_SESSION_FILE" ]] || return 1
+  local KNS_SESSION_ROOT="" KNS_SESSION_ENV=""
+  # shellcheck disable=SC1090
+  source "$KNS_SESSION_FILE" 2>/dev/null || return 1
+  _kns_session_root="${KNS_SESSION_ROOT:-}"
+  _kns_session_env="${KNS_SESSION_ENV:-}"
+  [[ -n "$_kns_session_root" && -n "$_kns_session_env" ]]
+}
+
+_kns_pwd_under_root() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
+  [[ "$PWD" == "$root" || "$PWD" == "$root"/* ]]
+}
+
+_kns_global_prompt() {
+  if [[ -f "$KNS_GLOBAL_CONFIG_FILE" ]]; then
+    local v
+    v=$(grep -E '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+    case "$v" in
+      0|off|OFF|false|False) echo 0; return 0 ;;
+      1|on|ON|true|True) echo 1; return 0 ;;
+    esac
+  fi
+  echo 1
+}
+
+_kns_set_global_prompt() {
+  local raw="${1:-}"
+  local v
+  case "$raw" in
+    on|ON|1) v=1 ;;
+    off|OFF|0) v=0 ;;
+    *)
+      echo "Usage: kns env prompt global [on|off]" >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$KNS_CONFIG_DIR"
+  if [[ -f "$KNS_GLOBAL_CONFIG_FILE" ]] && grep -qE '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" 2>/dev/null; then
+    # portable overwrite: rewrite file keeping other keys if any
+    local tmp
+    tmp=$(mktemp)
+    grep -vE '^prompt_on_enter=' "$KNS_GLOBAL_CONFIG_FILE" > "$tmp" || true
+    echo "prompt_on_enter=$v" >> "$tmp"
+    mv "$tmp" "$KNS_GLOBAL_CONFIG_FILE"
+  else
+    echo "prompt_on_enter=$v" > "$KNS_GLOBAL_CONFIG_FILE"
+  fi
+}
+
+_kns_effective_prompt() {
+  # Call after merge so KNS_PROMPT_ON_ENTER is set if present in project.
+  local p="${KNS_PROMPT_ON_ENTER-}"
+  if [[ -n "$p" ]]; then
+    case "$p" in
+      0|off|OFF|false|False) echo 0; return 0 ;;
+      *) echo 1; return 0 ;;
+    esac
+  fi
+  _kns_global_prompt
+}
+
+_kns_kubectl_apply_pins() {
+  if [[ -z "${_kns_pin_ctx:-}" ]]; then
+    return 1
+  fi
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "Error: kubectl is not installed or not in PATH" >&2
+    return 1
+  fi
+  if ! kubectl config use-context "$_kns_pin_ctx" >/dev/null 2>&1; then
+    echo "Error: Context '$_kns_pin_ctx' not found" >&2
+    return 1
+  fi
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl config set-context "$_kns_pin_ctx" --namespace="$_kns_pin_ns" >/dev/null 2>&1
+  fi
+  return 0
+}
+
+_kns_env_in_list() {
+  local want="$1"
+  local e
+  for e in ${KNS_ENVS:-}; do
+    [[ "$e" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+_kns_conf_quote_value() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
+  value="${value//\`/\\\`}"
+  printf '%s' "$value"
+}
+
+_kns_conf_upsert() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped tmp
+  escaped=$(_kns_conf_quote_value "$value")
+  mkdir -p "$(dirname "$file")"
+
+  if [[ ! -f "$file" ]]; then
+    {
+      echo "# Auto-generated by kns"
+      printf '%s="%s"\n' "$key" "$escaped"
+    } > "$file"
+    return 0
+  fi
+
+  tmp=$(mktemp)
+  awk -v prefix="${key}=" 'index($0, prefix) != 1 { print }' "$file" > "$tmp"
+  printf '%s="%s"\n' "$key" "$escaped" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+_kns_conf_delete_key() {
+  local file="$1"
+  local key="$2"
+  [[ -f "$file" ]] || return 0
+  local tmp
+  tmp=$(mktemp)
+  awk -v prefix="${key}=" 'index($0, prefix) != 1 { print }' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+_kns_conf_read_key() {
+  local file="$1"
+  local key="$2"
+  [[ -f "$file" ]] || return 0
+  (
+    unset "$key"
+    # shellcheck disable=SC1090
+    source "$file" 2>/dev/null || true
+    printf '%s' "${!key:-}"
+  )
+}
+
+_kns_env_conf_file() {
+  local owner=""
+  owner=$(_kns_envs_owner_dir || true)
+  if [[ -n "$owner" ]]; then
+    echo "$owner/$KNS_LOCAL_FILE"
+  else
+    echo "$PWD/$KNS_LOCAL_FILE"
+  fi
+}
+
+_kns_write_env_conf_key() {
+  local key="$1"
+  local value="$2"
+  local file
+  file=$(_kns_env_conf_file)
+  _kns_conf_upsert "$file" "$key" "$value"
+}
+
+_kns_require_multi_env() {
+  if ! _kns_is_multi_env; then
+    echo "No named environments configured. Use 'kns env add <name> <context> [namespace]' or 'kns set <context> [namespace]'." >&2
+    return 1
+  fi
+}
+
+_kns_unknown_env() {
+  local name="$1"
+  echo "Error: Unknown environment '$name'." >&2
+  if [[ -n "${KNS_ENVS:-}" ]]; then
+    echo "Available environments:" >&2
+    local e
+    for e in $KNS_ENVS; do
+      echo "  - $e" >&2
+    done
+  fi
+  return 1
+}
+
+_kns_pick_env() {
+  if [[ ! -t 0 ]]; then
+    return 1
+  fi
+  local -a envs=()
+  local e
+  for e in $KNS_ENVS; do
+    envs+=("$e")
+  done
+  [[ ${#envs[@]} -gt 0 ]] || return 1
+
+  local default="${KNS_DEFAULT_ENV:-}"
+  local i dmark
+  echo "Select kns environment:" >&2
+  for i in "${!envs[@]}"; do
+    dmark=""
+    [[ "${envs[$i]}" == "$default" ]] && dmark=" (default)"
+    printf "  %d) %s%s\n" "$((i + 1))" "${envs[$i]}" "$dmark" >&2
+  done
+  local choice=""
+  local def_idx=""
+  for i in "${!envs[@]}"; do
+    if [[ "${envs[$i]}" == "$default" ]]; then
+      def_idx=$((i + 1))
+      break
+    fi
+  done
+  if [[ -n "$def_idx" ]]; then
+    read -r -p "Choice [$def_idx]: " choice >&2 || return 1
+    [[ -z "$choice" ]] && choice="$def_idx"
+  else
+    read -r -p "Choice: " choice >&2 || return 1
+  fi
+  [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+  local idx=$((choice - 1))
+  [[ $idx -ge 0 && $idx -lt ${#envs[@]} ]] || return 1
+  echo "${envs[$idx]}"
+}
+
+cmd_env() {
+  local sub="${1:-}"
+  if [[ -z "$sub" ]]; then
+    cmd_env_pick
+    return
+  fi
+  shift || true
+  case "$sub" in
+    list) cmd_env_list "$@" ;;
+    show) cmd_env_show "$@" ;;
+    add) cmd_env_add "$@" ;;
+    remove) cmd_env_remove "$@" ;;
+    default) cmd_env_default "$@" ;;
+    prompt) cmd_env_prompt "$@" ;;
+    *) cmd_env_use "$sub" "$@" ;;
+  esac
+}
+
+cmd_env_pick() {
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  local name
+  name=$(_kns_pick_env) || return 1
+  cmd_env_use "$name"
+}
+
+cmd_env_use() {
+  local name="${1:-}"
+  if [[ -z "$name" || $# -ne 1 ]]; then
+    echo "Usage: kns env <name>" >&2
+    return 1
+  fi
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
+  _kns_env_pins "$name" || {
+    echo "Error: Environment '$name' has no context configured." >&2
+    return 1
+  }
+  local owner
+  owner=$(_kns_envs_owner_dir || true)
+  [[ -n "$owner" ]] || return 1
+  _kns_kubectl_apply_pins || return 1
+  _kns_session_write "$owner" "$name"
+  echo "Switched to environment: $name"
+  echo "  Context: $_kns_pin_ctx"
+  [[ -n "$_kns_pin_ns" ]] && echo "  Namespace: $_kns_pin_ns"
+  return 0
+}
+
+cmd_env_list() {
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: kns env list" >&2
+    return 1
+  fi
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  local owner="" active=""
+  owner=$(_kns_envs_owner_dir || true)
+  if _kns_session_read && [[ "$_kns_session_root" == "$owner" ]] &&
+    _kns_pwd_under_root "$owner" && _kns_env_in_list "$_kns_session_env"; then
+    active="$_kns_session_env"
+  fi
+  local e marker suffix
+  for e in $KNS_ENVS; do
+    marker=" "
+    suffix=""
+    [[ "$e" == "$active" ]] && marker="*"
+    [[ "$e" == "${KNS_DEFAULT_ENV:-}" ]] && suffix=" (default)"
+    echo "$marker $e$suffix"
+  done
+}
+
+cmd_env_show() {
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: kns env show [name]" >&2
+    return 1
+  fi
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  local name="${1:-}"
+  local owner=""
+  owner=$(_kns_envs_owner_dir || true)
+  if [[ -z "$name" ]] && _kns_session_read && [[ "$_kns_session_root" == "$owner" ]] &&
+    _kns_pwd_under_root "$owner" && _kns_env_in_list "$_kns_session_env"; then
+    name="$_kns_session_env"
+  fi
+  [[ -n "$name" ]] || name="${KNS_DEFAULT_ENV:-}"
+  if [[ -z "$name" ]]; then
+    echo "Error: No active or default environment." >&2
+    return 1
+  fi
+  _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
+  _kns_env_pins "$name" || {
+    echo "Error: Environment '$name' has no context configured." >&2
+    return 1
+  }
+  echo "Environment: $name"
+  echo "Context: $_kns_pin_ctx"
+  [[ -n "$_kns_pin_ns" ]] && echo "Namespace: $_kns_pin_ns"
+  [[ -n "$_kns_pin_pod" ]] && echo "Pod: $_kns_pin_pod"
+  [[ -n "$_kns_pin_container" ]] && echo "Container: $_kns_pin_container"
+  return 0
+}
+
+cmd_env_add() {
+  if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "Usage: kns env add <name> <context> [namespace]" >&2
+    return 1
+  fi
+  local name="$1" context="$2" namespace="${3:-}"
+  if ! _kns_valid_env_name "$name"; then
+    echo "Error: Invalid environment name '$name'. Use letters, digits, and underscores; the first character cannot be a digit." >&2
+    return 1
+  fi
+  if _kns_reserved_env_name "$name"; then
+    echo "Error: Environment name '$name' is reserved for a 'kns env' subcommand." >&2
+    return 1
+  fi
+  _kns_source_merged_conf || true
+  local file envs default
+  file=$(_kns_env_conf_file)
+  envs=$(_kns_conf_read_key "$file" KNS_ENVS)
+  default=$(_kns_conf_read_key "$file" KNS_DEFAULT_ENV)
+
+  _kns_conf_upsert "$file" "KNS_ENV_${name}_CONTEXT" "$context"
+  if [[ -n "$namespace" ]]; then
+    _kns_conf_upsert "$file" "KNS_ENV_${name}_NAMESPACE" "$namespace"
+  else
+    _kns_conf_delete_key "$file" "KNS_ENV_${name}_NAMESPACE"
+  fi
+  if ! KNS_ENVS="$envs" _kns_env_in_list "$name"; then
+    envs="${envs:+$envs }$name"
+  fi
+  _kns_conf_upsert "$file" KNS_ENVS "$envs"
+  if [[ -z "$default" ]]; then
+    _kns_conf_upsert "$file" KNS_DEFAULT_ENV "$name"
+  fi
+  echo "Added environment: $name → $file"
+  echo "  Context: $context"
+  [[ -n "$namespace" ]] && echo "  Namespace: $namespace"
+  return 0
+}
+
+cmd_env_remove() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: kns env remove <name>" >&2
+    return 1
+  fi
+  local name="$1"
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
+  local file envs="" e
+  file=$(_kns_env_conf_file)
+  for e in $KNS_ENVS; do
+    [[ "$e" == "$name" ]] || envs="${envs:+$envs }$e"
+  done
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_CONTEXT"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_NAMESPACE"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_POD"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_CONTAINER"
+  _kns_conf_upsert "$file" KNS_ENVS "$envs"
+  if [[ "${KNS_DEFAULT_ENV:-}" == "$name" ]]; then
+    if [[ -n "$envs" ]]; then
+      _kns_conf_upsert "$file" KNS_DEFAULT_ENV "${envs%% *}"
+    else
+      _kns_conf_delete_key "$file" KNS_DEFAULT_ENV
+    fi
+  fi
+  echo "Removed environment: $name → $file"
+}
+
+cmd_env_default() {
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: kns env default [name]" >&2
+    return 1
+  fi
+  _kns_source_merged_conf || true
+  _kns_require_multi_env || return 1
+  if [[ $# -eq 0 ]]; then
+    echo "${KNS_DEFAULT_ENV:-}"
+    return 0
+  fi
+  local name="$1"
+  _kns_env_in_list "$name" || { _kns_unknown_env "$name"; return 1; }
+  local file
+  file=$(_kns_env_conf_file)
+  _kns_conf_upsert "$file" KNS_DEFAULT_ENV "$name"
+  echo "Default environment: $name → $file"
+}
+
+cmd_env_prompt() {
+  local scope="project"
+  if [[ "${1:-}" == "global" ]]; then
+    scope="global"
+    shift
+  fi
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: kns env prompt [on|off] | kns env prompt global [on|off]" >&2
+    return 1
+  fi
+  if [[ $# -eq 1 ]]; then
+    case "$1" in
+      on|off) ;;
+      *)
+        echo "Usage: kns env prompt [on|off] | kns env prompt global [on|off]" >&2
+        return 1
+        ;;
+    esac
+    if [[ "$scope" == "global" ]]; then
+      _kns_set_global_prompt "$1"
+      echo "Global prompt on enter: $1"
+    else
+      _kns_source_merged_conf || true
+      _kns_require_multi_env || return 1
+      local file
+      file=$(_kns_env_conf_file)
+      _kns_conf_upsert "$file" KNS_PROMPT_ON_ENTER "$([[ "$1" == "on" ]] && echo 1 || echo 0)"
+      echo "Project prompt on enter: $1 → $file"
+    fi
+    return 0
+  fi
+
+  if [[ "$scope" == "global" ]]; then
+    [[ "$(_kns_global_prompt)" == "1" ]] && echo on || echo off
+    return 0
+  fi
+  _kns_source_merged_conf || true
+  local effective global project
+  effective=$(_kns_effective_prompt)
+  global=$(_kns_global_prompt)
+  project="${KNS_PROMPT_ON_ENTER-}"
+  echo "Prompt on enter: $([[ "$effective" == "1" ]] && echo on || echo off)"
+  if [[ -n "$project" ]]; then
+    echo "Project: $([[ "$project" == "0" || "$project" == "off" || "$project" == "OFF" || "$project" == "false" || "$project" == "False" ]] && echo off || echo on)"
+  else
+    echo "Project: <not set>"
+  fi
+  echo "Global: $([[ "$global" == "1" ]] && echo on || echo off)"
+}
+
+_kns_resolve_effective_pins() {
+  _kns_pin_ctx=""
+  _kns_pin_ns=""
+  _kns_pin_pod=""
+  _kns_pin_container=""
+
+  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
+  local has_manual=0
+  local man_ctx="" man_ns=""
+  if [[ -f "$manual_override_file" ]]; then
+    local KNS_MANUAL_OVERRIDE="" KNS_MANUAL_CONTEXT="" KNS_MANUAL_NAMESPACE=""
+    # shellcheck disable=SC1090
+    source "$manual_override_file" 2>/dev/null || true
+    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+      man_ctx="$KNS_MANUAL_CONTEXT"
+      man_ns="${KNS_MANUAL_NAMESPACE:-}"
+      _kns_pin_ctx="$man_ctx"
+      _kns_pin_ns="$man_ns"
+      has_manual=1
+    fi
+  fi
+
+  if ! _kns_source_merged_conf; then
+    [[ $has_manual -eq 1 ]]
+    return $?
+  fi
+
+  local owner=""
+  if _kns_is_multi_env; then
+    owner=$(_kns_envs_owner_dir || true)
+    if _kns_session_read && [[ -n "$owner" && "$_kns_session_root" == "$owner" ]] &&
+      _kns_pwd_under_root "$owner" && _kns_env_in_list "$_kns_session_env"; then
+      if _kns_env_pins "$_kns_session_env"; then
+        if [[ $has_manual -eq 1 ]]; then
+          # Manual override wins for ctx/ns; keep env pod/container from session env.
+          local pod="$_kns_pin_pod" ctr="$_kns_pin_container"
+          _kns_pin_ctx="$man_ctx"
+          _kns_pin_ns="$man_ns"
+          _kns_pin_pod="$pod"
+          _kns_pin_container="$ctr"
+        fi
+        return 0
+      fi
+    fi
+    # Multi-env but no usable session: do not fall back to flat keys.
+    if [[ $has_manual -eq 1 ]]; then
+      _kns_pin_pod=""
+      _kns_pin_container=""
+      return 0
+    fi
+    _kns_pin_ctx=""
+    _kns_pin_ns=""
+    _kns_pin_pod=""
+    _kns_pin_container=""
+    return 1
+  fi
+
+  # Single-env flat
+  if [[ $has_manual -eq 0 ]]; then
+    _kns_pin_ctx="${KNS_CONTEXT:-}"
+    _kns_pin_ns="${KNS_NAMESPACE:-}"
+  fi
+  _kns_pin_pod="${KNS_POD:-}"
+  _kns_pin_container="${KNS_CONTAINER:-}"
+  [[ -n "$_kns_pin_ctx" ]]
 }
 
 # Read pod/container from .kns.conf file
@@ -201,6 +814,13 @@ cmd_set() {
 
   if [[ -z "$context" ]]; then
     echo "Usage: kns set <context> [namespace]" >&2
+    exit 1
+  fi
+
+  if _kns_source_merged_conf && _kns_is_multi_env; then
+    echo "Error: this directory uses named environments (KNS_ENVS)." >&2
+    echo "Use: kns env add <name> <context> [namespace]" >&2
+    echo "  or: kns env <name>" >&2
     exit 1
   fi
 
@@ -238,46 +858,55 @@ cmd_set() {
 
 # Show merged kns config
 cmd_show() {
-  # Check for manual override first
+  local has_manual=0
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   if [[ -f "$manual_override_file" ]]; then
     local KNS_MANUAL_OVERRIDE=""
     local KNS_MANUAL_CONTEXT=""
     local KNS_MANUAL_NAMESPACE=""
+    # shellcheck disable=SC1090
     source "$manual_override_file" 2>/dev/null || true
-    
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" ]] && [[ -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
+      has_manual=1
       echo "Source: Manual override (from 'kns use' command)"
-      echo "Context: ${KNS_MANUAL_CONTEXT}"
-      [[ -n "${KNS_MANUAL_NAMESPACE:-}" ]] && echo "Namespace: ${KNS_MANUAL_NAMESPACE}"
-      return 0
     fi
   fi
-  
+
   if ! _kns_source_merged_conf; then
-    echo "No .kns.conf file found in current or parent directories"
-    exit 1
+    if [[ $has_manual -eq 0 ]]; then
+      echo "No .kns.conf file found in current or parent directories"
+      exit 1
+    fi
+  elif [[ $has_manual -eq 0 ]]; then
+    if [[ ${#_kns_conf_files[@]} -gt 1 ]]; then
+      echo "Source: ${_kns_conf_files[*]} (merged)"
+    else
+      echo "Source: ${_kns_conf_files[0]}"
+    fi
   fi
 
-  if [[ ${#_kns_conf_files[@]} -gt 1 ]]; then
-    echo "Source: ${_kns_conf_files[*]} (merged)"
-  else
-    echo "Source: ${_kns_conf_files[0]}"
-  fi
+  _kns_resolve_effective_pins || true
 
-  if [[ -n "${KNS_CONTEXT:-}" ]]; then
-    echo "Context: $KNS_CONTEXT"
+  if [[ -n "${_kns_pin_ctx:-}" ]]; then
+    echo "Context: $_kns_pin_ctx"
   else
     echo "Context: <not set>"
   fi
-  if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-    echo "Namespace: $KNS_NAMESPACE"
-  fi
-  if [[ -n "${KNS_POD:-}" ]]; then
-    echo "Pod: $KNS_POD"
-  fi
-  if [[ -n "${KNS_CONTAINER:-}" ]]; then
-    echo "Container: $KNS_CONTAINER"
+  [[ -n "${_kns_pin_ns:-}" ]] && echo "Namespace: $_kns_pin_ns"
+  [[ -n "${_kns_pin_pod:-}" ]] && echo "Pod: $_kns_pin_pod"
+  [[ -n "${_kns_pin_container:-}" ]] && echo "Container: $_kns_pin_container"
+
+  if _kns_is_multi_env; then
+    echo "Environments: $KNS_ENVS"
+    echo "Default: ${KNS_DEFAULT_ENV:-<none>}"
+    local owner=""
+    owner=$(_kns_envs_owner_dir || true)
+    if _kns_session_read && [[ -n "$owner" && "$_kns_session_root" == "$owner" ]] &&
+      _kns_pwd_under_root "$owner" && _kns_env_in_list "$_kns_session_env"; then
+      echo "Active env: $_kns_session_env"
+    else
+      echo "No active environment (use 'kns env …' to select one)"
+    fi
   fi
 }
 
@@ -351,7 +980,7 @@ cmd_kubectl() {
   shift
 
   # Auto-switch context if .kns.conf exists
-  auto_switch_context
+  auto_switch_context read || true
 
   case "$cmd" in
     pods)
@@ -405,33 +1034,25 @@ cmd_container() {
 
 # Auto-switch context based on current directory
 auto_switch_context() {
-  # Check for manual override from 'kns use' command (stored in file)
-  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
-  if [[ -f "$manual_override_file" ]]; then
-    local KNS_MANUAL_OVERRIDE=""
-    local KNS_MANUAL_CONTEXT=""
-    local KNS_MANUAL_NAMESPACE=""
-    source "$manual_override_file" 2>/dev/null || true
-    
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" ]] && [[ -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
-      kubectl config use-context "$KNS_MANUAL_CONTEXT" >/dev/null 2>&1
-      if [[ -n "${KNS_MANUAL_NAMESPACE:-}" ]]; then
-        kubectl config set-context "$KNS_MANUAL_CONTEXT" --namespace="$KNS_MANUAL_NAMESPACE" >/dev/null 2>&1
-      fi
-      return 0
-    fi
-  fi
-  
-  # No manual override, so use .kns.conf if available
-  if _kns_source_merged_conf; then
-    if [[ -n "${KNS_CONTEXT:-}" ]]; then
-      kubectl config use-context "$KNS_CONTEXT" >/dev/null 2>&1
-      if [[ -n "${KNS_NAMESPACE:-}" ]]; then
-        kubectl config set-context "$KNS_CONTEXT" --namespace="$KNS_NAMESPACE" >/dev/null 2>&1
+  local access="${1:-read}"
+  if _kns_resolve_effective_pins; then
+    if [[ -n "${_kns_pin_ctx:-}" ]]; then
+      kubectl config use-context "$_kns_pin_ctx" >/dev/null 2>&1 || true
+      if [[ -n "${_kns_pin_ns:-}" ]]; then
+        kubectl config set-context "$_kns_pin_ctx" --namespace="$_kns_pin_ns" >/dev/null 2>&1 || true
       fi
     fi
+    return 0
   fi
-  # Note: Manual override file is only cleared on directory change (kns.sh)
+  if _kns_is_multi_env; then
+    if [[ "$access" == "mutate" ]]; then
+      echo "Error: No active named environment. Select one with 'kns env'." >&2
+    else
+      echo "Warning: No active named environment; using ambient kubectl context. Select one with 'kns env'." >&2
+    fi
+    return 1
+  fi
+  return 0
 }
 
 # Set current pod
@@ -441,6 +1062,25 @@ cmd_set_pod() {
   if [[ -z "$pod" ]]; then
     echo "Usage: kns pod set <pod-name>" >&2
     exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    auto_switch_context
+    if ! kubectl get pod "$pod" >/dev/null 2>&1; then
+      echo "Error: Pod '$pod' not found" >&2
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_POD" "$pod"
+    echo "Set current pod: $pod"
+    return 0
   fi
 
   local file="$PWD/$KNS_LOCAL_FILE"
@@ -490,6 +1130,44 @@ cmd_set_container() {
   if [[ -z "$container" ]]; then
     echo "Usage: kns container set <container-name>" >&2
     exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local pod_var="KNS_ENV_${_kns_session_env}_POD"
+    local existing_pod="${!pod_var:-}"
+    if [[ -z "$existing_pod" ]]; then
+      echo "Error: Pod must be set first. Use 'kns pod set <pod-name>' to set it." >&2
+      exit 1
+    fi
+    auto_switch_context
+    local containers
+    containers=$(kubectl get pod "$existing_pod" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+    local found=0 c
+    for c in $containers; do
+      if [[ "$c" == "$container" ]]; then
+        found=1
+        break
+      fi
+    done
+    if [[ $found -eq 0 ]]; then
+      echo "Error: Container '$container' not found in pod '$existing_pod'" >&2
+      echo "Available containers:" >&2
+      for c in $containers; do
+        echo "  - $c" >&2
+      done
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_CONTAINER" "$container"
+    echo "Set current container: $container"
+    return 0
   fi
 
   local file="$PWD/$KNS_LOCAL_FILE"
@@ -596,6 +1274,31 @@ cmd_unset_pod() {
     esac
   done
 
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local pod_var="KNS_ENV_${_kns_session_env}_POD"
+    local existing_pod="${!pod_var:-}"
+    if [[ -z "$existing_pod" ]]; then
+      echo "No pod set in $file"
+      return 0
+    fi
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_POD"
+    if [[ $clear_container -eq 1 ]]; then
+      _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_CONTAINER"
+      echo "Unset pod and container for $(pwd)"
+    else
+      echo "Unset pod for $(pwd)"
+    fi
+    return 0
+  fi
+
   local file="$PWD/$KNS_LOCAL_FILE"
   if [[ ! -f "$file" ]]; then
     echo "No pod set in $file"
@@ -635,6 +1338,26 @@ cmd_unset_container() {
     exit 1
   fi
 
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    local ctr_var="KNS_ENV_${_kns_session_env}_CONTAINER"
+    local existing_container="${!ctr_var:-}"
+    if [[ -z "$existing_container" ]]; then
+      echo "No container set in $file"
+      return 0
+    fi
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_CONTAINER"
+    echo "Unset container for $(pwd)"
+    return 0
+  fi
+
   local file="$PWD/$KNS_LOCAL_FILE"
   if [[ ! -f "$file" ]]; then
     echo "No container set in $file"
@@ -660,32 +1383,26 @@ cmd_unset_container() {
 
 # Get containers of current pod
 cmd_get_containers() {
-  if ! _kns_source_merged_conf; then
-    echo "Error: No .kns.conf file found in current or parent directories" >&2
-    exit 1
-  fi
-
-  if [[ -z "${KNS_POD:-}" ]]; then
+  _kns_resolve_active
+  if [[ -z "${_kns_pod:-}" ]]; then
     echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
     exit 1
   fi
-  
-  # Auto-switch context if needed
+
   auto_switch_context
-  
-  # Get containers from pod
+
   local containers
-  containers=$(kubectl get pod "$KNS_POD" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
-  
+  containers=$(kubectl get pod "$_kns_pod" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+
   if [[ -z "$containers" ]]; then
-    echo "Error: Could not retrieve containers for pod '$KNS_POD'" >&2
+    echo "Error: Could not retrieve containers for pod '$_kns_pod'" >&2
     exit 1
   fi
-  
-  echo "Pod: $KNS_POD"
+
+  echo "Pod: $_kns_pod"
   echo "Containers:"
   for container in $containers; do
-    if [[ "$container" == "${KNS_CONTAINER:-}" ]]; then
+    if [[ "$container" == "${_kns_container:-}" ]]; then
       echo "  - $container (current)"
     else
       echo "  - $container"
@@ -695,20 +1412,17 @@ cmd_get_containers() {
 
 # Get current pod and container from config
 get_current_pod_container() {
-  if ! _kns_source_merged_conf; then
+  _kns_resolve_active
+  if [[ -z "${_kns_pod:-}" ]]; then
     return 1
   fi
 
-  # Check if pod is set
-  if [[ -z "${KNS_POD:-}" ]]; then
-    return 1
-  fi
-  
-  echo "${KNS_POD}:${KNS_CONTAINER:-}"
+  echo "${_kns_pod}:${_kns_container:-}"
 }
 
 # Execute command in pod/container
 cmd_exec() {
+  auto_switch_context mutate || exit 1
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
     echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
@@ -722,9 +1436,6 @@ cmd_exec() {
     echo "Error: Pod name is empty" >&2
     exit 1
   fi
-  
-  # Auto-switch context if needed
-  auto_switch_context
   
   # Get namespace from context if available
   local namespace=""
@@ -790,6 +1501,8 @@ cmd_copy() {
     exit 1
   fi
   
+  auto_switch_context mutate || exit 1
+
   local source="$1"
   local dest="$2"
   local pod_container
@@ -799,9 +1512,6 @@ cmd_copy() {
   fi
   
   IFS=':' read -r pod container <<< "$pod_container"
-  
-  # Auto-switch context if needed
-  auto_switch_context
   
   # Determine direction: if source starts with "pod:", it's pod->local, else local->pod
   local final_source=""
@@ -836,6 +1546,7 @@ cmd_copy() {
 
 # Shell into pod/container
 cmd_shell() {
+  auto_switch_context mutate || exit 1
   local pod_container
   if ! pod_container=$(get_current_pod_container); then
     echo "Error: Current pod not set. Use 'kns pod set <pod-name>' to set it." >&2
@@ -849,9 +1560,6 @@ cmd_shell() {
     echo "Error: Pod name is empty" >&2
     exit 1
   fi
-  
-  # Auto-switch context if needed
-  auto_switch_context
   
   # Get namespace from context if available
   local namespace=""
@@ -924,7 +1632,7 @@ cmd_shell() {
 # --- Shell completion -------------------------------------------------------
 
 _kns_top_commands() {
-  printf '%s\n' set show use list unset pods svc deploy namespaces pod container containers exec cp sh help completion
+  printf '%s\n' set show use list unset env pods svc deploy namespaces pod container containers exec cp sh help completion
 }
 
 _kns_resolve_active() {
@@ -932,27 +1640,11 @@ _kns_resolve_active() {
   _kns_ns=""
   _kns_pod=""
   _kns_container=""
-
-  local manual_override_file="$KNS_CONFIG_DIR/manual_override"
-  if [[ -f "$manual_override_file" ]]; then
-    local KNS_MANUAL_OVERRIDE=""
-    local KNS_MANUAL_CONTEXT=""
-    local KNS_MANUAL_NAMESPACE=""
-    # shellcheck disable=SC1090
-    source "$manual_override_file" 2>/dev/null || true
-    if [[ "${KNS_MANUAL_OVERRIDE:-}" == "1" && -n "${KNS_MANUAL_CONTEXT:-}" ]]; then
-      _kns_ctx="$KNS_MANUAL_CONTEXT"
-      _kns_ns="${KNS_MANUAL_NAMESPACE:-}"
-    fi
-  fi
-
-  if _kns_source_merged_conf; then
-    if [[ -z "$_kns_ctx" ]]; then
-      _kns_ctx="${KNS_CONTEXT:-}"
-      _kns_ns="${KNS_NAMESPACE:-}"
-    fi
-    _kns_pod="${KNS_POD:-}"
-    _kns_container="${KNS_CONTAINER:-}"
+  if _kns_resolve_effective_pins; then
+    _kns_ctx="$_kns_pin_ctx"
+    _kns_ns="$_kns_pin_ns"
+    _kns_pod="$_kns_pin_pod"
+    _kns_container="$_kns_pin_container"
   fi
 }
 
@@ -972,6 +1664,14 @@ _kns_complete_live() {
         _kns_kubectl_complete config get-contexts -o name
       elif [[ $n -eq 3 ]]; then
         local ctx="${words[1]}"
+        _kns_kubectl_complete --context="$ctx" get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+      fi
+      ;;
+    env)
+      if [[ $n -eq 4 && "${words[1]}" == "add" ]]; then
+        _kns_kubectl_complete config get-contexts -o name
+      elif [[ $n -eq 5 && "${words[1]}" == "add" ]]; then
+        local ctx="${words[3]}"
         _kns_kubectl_complete --context="$ctx" get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
       fi
       ;;
@@ -1030,6 +1730,19 @@ cmd___complete() {
         printf '%s\n' bash zsh install uninstall mode
       elif [[ $n -eq 3 && "${words[1]}" == "mode" ]]; then
         printf '%s\n' static live
+      fi
+      ;;
+    env)
+      if [[ $n -eq 2 ]]; then
+        printf '%s\n' list show add remove default prompt
+        if _kns_source_merged_conf && _kns_is_multi_env; then
+          # shellcheck disable=SC2086
+          printf '%s\n' $KNS_ENVS
+        fi
+      elif [[ $n -eq 3 && "${words[1]}" == "prompt" ]]; then
+        printf '%s\n' on off global
+      elif [[ $n -eq 4 && "${words[1]}" == "prompt" && "${words[2]}" == "global" ]]; then
+        printf '%s\n' on off
       fi
       ;;
   esac
@@ -1293,6 +2006,7 @@ CORE (directory → context):
     use <context> [namespace]    Switch context now; override until next directory change
     list                         List all available kubectl contexts
     unset                        Remove .kns.conf from current directory (all local settings)
+    env …                        Named environments (list/show/add/remove/default/prompt; kns env <name>)
     completion …                 Shell completions (see: kns completion help)
 
 KUBECTL SHORTCUTS:
@@ -1336,6 +2050,16 @@ CONFIGURATION:
       - KNS_NAMESPACE: Kubernetes namespace
       - KNS_POD: Current pod name
       - KNS_CONTAINER: Current container name (optional)
+
+    Named environments (multi-env): when KNS_ENVS is set, flat KNS_CONTEXT /
+    KNS_NAMESPACE keys in the same merge are ignored. Per-environment keys:
+      - KNS_ENVS: space-separated environment names
+      - KNS_DEFAULT_ENV: default environment on enter
+      - KNS_PROMPT_ON_ENTER: 1/0 — prompt to pick env when entering the tree
+      - KNS_ENV_<name>_CONTEXT, KNS_ENV_<name>_NAMESPACE (and optional _POD, _CONTAINER)
+
+    'kns unset' removes the whole local .kns.conf file, including all named
+    environments defined there.
 
     .kns.conf files are sourced as shell code—only use trusted directories.
 
