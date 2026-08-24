@@ -98,6 +98,9 @@ main() {
     pod)
       cmd_pod "$@"
       ;;
+    service)
+      cmd_service "$@"
+      ;;
     container)
       cmd_container "$@"
       ;;
@@ -178,7 +181,7 @@ _kns_source_merged_conf() {
   for env_var in ${!KNS_ENV_@}; do
     unset "$env_var"
   done
-  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER \
+  unset KNS_CONTEXT KNS_NAMESPACE KNS_POD KNS_CONTAINER KNS_SERVICE \
     KNS_ENVS KNS_DEFAULT_ENV KNS_PROMPT_ON_ENTER
   if ! _kns_collect_conf_files; then
     return 1
@@ -213,11 +216,12 @@ _kns_reserved_env_name() {
 
 _kns_env_pins() {
   local name="$1"
-  local ctx_var ns_var pod_var ctr_var
+  local ctx_var ns_var pod_var ctr_var svc_var
   _kns_pin_ctx=""
   _kns_pin_ns=""
   _kns_pin_pod=""
   _kns_pin_container=""
+  _kns_pin_service=""
   if ! _kns_valid_env_name "$name"; then
     echo "Error: Invalid environment name '$name'. Use letters, digits, and underscores; the first character cannot be a digit." >&2
     return 1
@@ -226,10 +230,12 @@ _kns_env_pins() {
   ns_var="KNS_ENV_${name}_NAMESPACE"
   pod_var="KNS_ENV_${name}_POD"
   ctr_var="KNS_ENV_${name}_CONTAINER"
+  svc_var="KNS_ENV_${name}_SERVICE"
   _kns_pin_ctx="${!ctx_var:-}"
   _kns_pin_ns="${!ns_var:-}"
   _kns_pin_pod="${!pod_var:-}"
   _kns_pin_container="${!ctr_var:-}"
+  _kns_pin_service="${!svc_var:-}"
   [[ -n "$_kns_pin_ctx" ]]
 }
 
@@ -651,6 +657,7 @@ cmd_env_remove() {
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_NAMESPACE"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_POD"
   _kns_conf_delete_key "$file" "KNS_ENV_${name}_CONTAINER"
+  _kns_conf_delete_key "$file" "KNS_ENV_${name}_SERVICE"
   _kns_conf_upsert "$file" KNS_ENVS "$envs"
   if [[ "${KNS_DEFAULT_ENV:-}" == "$name" ]]; then
     if [[ -n "$envs" ]]; then
@@ -736,6 +743,7 @@ _kns_resolve_effective_pins() {
   _kns_pin_ns=""
   _kns_pin_pod=""
   _kns_pin_container=""
+  _kns_pin_service=""
 
   local manual_override_file="$KNS_CONFIG_DIR/manual_override"
   local has_manual=0
@@ -779,12 +787,14 @@ _kns_resolve_effective_pins() {
     if [[ $has_manual -eq 1 ]]; then
       _kns_pin_pod=""
       _kns_pin_container=""
+      _kns_pin_service=""
       return 0
     fi
     _kns_pin_ctx=""
     _kns_pin_ns=""
     _kns_pin_pod=""
     _kns_pin_container=""
+    _kns_pin_service=""
     return 1
   fi
 
@@ -795,6 +805,7 @@ _kns_resolve_effective_pins() {
   fi
   _kns_pin_pod="${KNS_POD:-}"
   _kns_pin_container="${KNS_CONTAINER:-}"
+  _kns_pin_service="${KNS_SERVICE:-}"
   [[ -n "$_kns_pin_ctx" ]]
 }
 
@@ -895,6 +906,7 @@ cmd_show() {
   [[ -n "${_kns_pin_ns:-}" ]] && echo "Namespace: $_kns_pin_ns"
   [[ -n "${_kns_pin_pod:-}" ]] && echo "Pod: $_kns_pin_pod"
   [[ -n "${_kns_pin_container:-}" ]] && echo "Container: $_kns_pin_container"
+  [[ -n "${_kns_pin_service:-}" ]] && echo "Service: $_kns_pin_service"
 
   if _kns_is_multi_env; then
     echo "Environments: $KNS_ENVS"
@@ -1015,6 +1027,23 @@ cmd_pod() {
   esac
 }
 
+cmd_service() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    set)
+      cmd_set_service "$@"
+      ;;
+    unset)
+      cmd_unset_service "$@"
+      ;;
+    *)
+      echo "Usage: kns service set <service-name> | kns service unset" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd_container() {
   local sub="${1:-}"
   shift || true
@@ -1121,6 +1150,69 @@ cmd_set_pod() {
   } > "$file"
 
   echo "Set current pod: $pod"
+}
+
+# Set current service
+cmd_set_service() {
+  local service="${1:-}"
+
+  if [[ -z "$service" || $# -ne 1 ]]; then
+    echo "Usage: kns service set <service-name>" >&2
+    exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    auto_switch_context
+    if ! kubectl get svc "$service" >/dev/null 2>&1; then
+      echo "Error: Service '$service' not found" >&2
+      exit 1
+    fi
+    _kns_conf_upsert "$file" "KNS_ENV_${_kns_session_env}_SERVICE" "$service"
+    echo "Set current service: $service"
+    return 0
+  fi
+
+  local file="$PWD/$KNS_LOCAL_FILE"
+  auto_switch_context
+  if ! kubectl get svc "$service" >/dev/null 2>&1; then
+    echo "Error: Service '$service' not found" >&2
+    exit 1
+  fi
+  _kns_conf_upsert "$file" KNS_SERVICE "$service"
+  echo "Set current service: $service"
+}
+
+cmd_unset_service() {
+  if [[ $# -gt 0 ]]; then
+    echo "Usage: kns service unset" >&2
+    exit 1
+  fi
+
+  _kns_source_merged_conf || true
+  if _kns_is_multi_env; then
+    local owner
+    owner=$(_kns_envs_owner_dir) || true
+    if ! _kns_session_read || [[ "$_kns_session_root" != "$owner" ]]; then
+      echo "Error: select an environment first (kns env <name>)." >&2
+      exit 1
+    fi
+    local file="$owner/$KNS_LOCAL_FILE"
+    _kns_conf_delete_key "$file" "KNS_ENV_${_kns_session_env}_SERVICE"
+    echo "Unset service for $(pwd)"
+    return 0
+  fi
+
+  local file="$PWD/$KNS_LOCAL_FILE"
+  _kns_conf_delete_key "$file" KNS_SERVICE
+  echo "Unset service for $(pwd)"
 }
 
 # Set current container
