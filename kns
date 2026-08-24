@@ -1250,12 +1250,201 @@ cmd_pf_run() {
   fi
 }
 
+_kns_pf_record_load() {
+  local record="$1"
+  KNS_PF_ID=""
+  KNS_PF_PID=""
+  KNS_PF_ROOT=""
+  KNS_PF_ENV=""
+  KNS_PF_NAME=""
+  KNS_PF_PORTS=""
+  KNS_PF_TARGET=""
+  KNS_PF_CONTEXT=""
+  KNS_PF_NAMESPACE=""
+  KNS_PF_STARTED=""
+  KNS_PF_LOG=""
+  # shellcheck disable=SC1090
+  source "$record" 2>/dev/null || return 1
+  [[ -n "$KNS_PF_ID" && "$KNS_PF_PID" =~ ^[0-9]+$ && -n "$KNS_PF_ROOT" ]]
+}
+
+_kns_pf_scope() {
+  _kns_pf_prefix || return 1
+  _kns_pf_scope_root=$(_kns_project_root)
+  _kns_pf_scope_env=""
+  if _kns_is_multi_env; then
+    _kns_pf_scope_env="$_kns_session_env"
+  fi
+}
+
+_kns_pf_record_in_scope() {
+  [[ "$KNS_PF_ROOT" == "$_kns_pf_scope_root" &&
+    "$KNS_PF_ENV" == "$_kns_pf_scope_env" ]]
+}
+
+_kns_pf_local_port() {
+  echo "${1%%:*}"
+}
+
+_kns_pf_write_record() {
+  local record="$1"
+  {
+    printf 'KNS_PF_ID=%q\n' "$KNS_PF_ID"
+    printf 'KNS_PF_PID=%q\n' "$KNS_PF_PID"
+    printf 'KNS_PF_ROOT=%q\n' "$KNS_PF_ROOT"
+    printf 'KNS_PF_ENV=%q\n' "$KNS_PF_ENV"
+    printf 'KNS_PF_NAME=%q\n' "$KNS_PF_NAME"
+    printf 'KNS_PF_PORTS=%q\n' "$KNS_PF_PORTS"
+    printf 'KNS_PF_TARGET=%q\n' "$KNS_PF_TARGET"
+    printf 'KNS_PF_CONTEXT=%q\n' "$KNS_PF_CONTEXT"
+    printf 'KNS_PF_NAMESPACE=%q\n' "$KNS_PF_NAMESPACE"
+    printf 'KNS_PF_STARTED=%q\n' "$KNS_PF_STARTED"
+    printf 'KNS_PF_LOG=%q\n' "$KNS_PF_LOG"
+  } > "$record"
+}
+
+cmd_pf_start() {
+  auto_switch_context mutate || exit 1
+  _kns_pf_resolve "$@" || exit 1
+  _kns_pf_scope || exit 1
+
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local logs_dir="$pf_dir/logs"
+  local local_port
+  local_port=$(_kns_pf_local_port "$_kns_pf_ports")
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    if ! _kns_pf_record_load "$record"; then
+      continue
+    fi
+    _kns_pf_record_in_scope || continue
+    if ! kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      rm -f "$record"
+      continue
+    fi
+    if [[ $(_kns_pf_local_port "$KNS_PF_PORTS") == "$local_port" ]]; then
+      echo "Error: local port $local_port already has a background forward. Use 'kns pf list' or 'kns pf stop' first." >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "$logs_dir"
+  local id="pf_$(date +%s)_$$_${RANDOM}"
+  local log="$logs_dir/$id.log"
+  if [[ -n "${_kns_pin_ns:-}" ]]; then
+    kubectl port-forward -n "$_kns_pin_ns" "$_kns_pf_target" "$_kns_pf_ports" >"$log" 2>&1 &
+  else
+    kubectl port-forward "$_kns_pf_target" "$_kns_pf_ports" >"$log" 2>&1 &
+  fi
+  local pid=$!
+
+  KNS_PF_ID="$id"
+  KNS_PF_PID="$pid"
+  KNS_PF_ROOT="$_kns_pf_scope_root"
+  KNS_PF_ENV="$_kns_pf_scope_env"
+  KNS_PF_NAME="$_kns_pf_mapping"
+  KNS_PF_PORTS="$_kns_pf_ports"
+  KNS_PF_TARGET="$_kns_pf_target"
+  KNS_PF_CONTEXT="${_kns_pin_ctx:-}"
+  KNS_PF_NAMESPACE="${_kns_pin_ns:-}"
+  KNS_PF_STARTED="$(date +%s)"
+  KNS_PF_LOG="$log"
+  record="$pf_dir/$id.env"
+  _kns_pf_write_record "$record"
+
+  sleep 0.2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Error: port-forward failed to start:" >&2
+    tail -n 20 "$log" >&2 || true
+    rm -f "$record"
+    exit 1
+  fi
+  echo "Started ${_kns_pf_mapping:-$_kns_pf_ports} ($id, pid $pid)"
+}
+
+cmd_pf_list() {
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: kns pf list" >&2
+    exit 1
+  fi
+  _kns_pf_scope || exit 1
+
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record status
+  printf '%-28s %-16s %-13s %-24s %s\n' "ID" "NAME" "PORTS" "TARGET" "STATUS"
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    _kns_pf_record_in_scope || continue
+    status="running"
+    if ! kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      status="dead"
+    fi
+    printf '%-28s %-16s %-13s %-24s %s\n' \
+      "$KNS_PF_ID" "${KNS_PF_NAME:--}" "$KNS_PF_PORTS" "$KNS_PF_TARGET" "$status"
+    if [[ "$status" == "dead" ]]; then
+      rm -f "$record"
+    fi
+  done
+}
+
+cmd_pf_stop() {
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: kns pf stop [name|id|all]" >&2
+    exit 1
+  fi
+  _kns_pf_scope || exit 1
+
+  local selector="${1:-all}"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record matched=0
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    _kns_pf_record_in_scope || continue
+    if [[ "$selector" != "all" && "$selector" != "$KNS_PF_ID" &&
+      "$selector" != "$KNS_PF_NAME" ]]; then
+      continue
+    fi
+    matched=1
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    rm -f "$record"
+    echo "Stopped ${KNS_PF_NAME:-$KNS_PF_ID}"
+  done
+  if [[ $matched -eq 0 ]]; then
+    echo "Error: no background port-forward matched '$selector'." >&2
+    exit 1
+  fi
+}
+
+_kns_pf_cleanup_left() {
+  local current="${1:-$PWD}"
+  local pf_dir="$KNS_CONFIG_DIR/pf"
+  local record
+  for record in "$pf_dir"/*.env; do
+    [[ -f "$record" ]] || continue
+    _kns_pf_record_load "$record" || continue
+    if [[ "$current" == "$KNS_PF_ROOT" || "$current" == "$KNS_PF_ROOT"/* ]]; then
+      continue
+    fi
+    if kill -0 "$KNS_PF_PID" 2>/dev/null; then
+      kill "$KNS_PF_PID" 2>/dev/null || true
+    fi
+    rm -f "$record"
+  done
+}
+
 cmd_pf() {
   local sub="${1:-}"
   case "$sub" in
     set) shift; cmd_pf_set "$@" ;;
     unset) shift; cmd_pf_unset "$@" ;;
-    start|stop|list) shift; echo "Error: not implemented yet" >&2; exit 1 ;;
+    start) shift; cmd_pf_start "$@" ;;
+    stop) shift; cmd_pf_stop "$@" ;;
+    list) shift; cmd_pf_list "$@" ;;
     *) cmd_pf_run "$@" ;;
   esac
 }

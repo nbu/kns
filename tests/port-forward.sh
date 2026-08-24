@@ -260,6 +260,116 @@ EOF
   grep -q 'service set' "$dir/output" || fail "missing service set hint"
 }
 
+wait_for_dead() {
+  local pid="$1"
+  local attempts=20
+  while kill -0 "$pid" 2>/dev/null && [[ $attempts -gt 0 ]]; do
+    sleep 0.05
+    attempts=$((attempts - 1))
+  done
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+test_pf_bg_lifecycle() {
+  local dir="$TMP/pf-bg"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
+  cat > "$dir/bin/kubectl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$KUBECTL_LOG"
+if [[ "$1" == "port-forward" ]]; then
+  echo "$$" > "$KUBECTL_PF_PIDFILE"
+  exec sleep 120
+fi
+exit 0
+EOF
+  chmod +x "$dir/bin/kubectl"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_NAMESPACE="ns"
+KNS_POD="web-0"
+KNS_FORWARDS="app"
+KNS_FORWARD_app="18080:8080"
+EOF
+  export KUBECTL_PF_PIDFILE="$dir/pf.pid"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf start app"
+
+  local record pid
+  record=$(printf '%s\n' "$dir/cfg"/pf/*.env)
+  [[ -f "$record" ]] || fail "background record missing"
+  # shellcheck disable=SC1090
+  source "$record"
+  pid="$KNS_PF_PID"
+  [[ "$KNS_PF_ROOT" == "$dir/proj" ]] || fail "record has wrong project root"
+  [[ "$KNS_PF_NAME" == "app" ]] || fail "record has wrong mapping name"
+  [[ "$KNS_PF_PORTS" == "18080:8080" ]] || fail "record has wrong ports"
+  [[ "$KNS_PF_TARGET" == "pod/web-0" ]] || fail "record has wrong target"
+  kill -0 "$pid" 2>/dev/null || fail "background process is not live"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf list" > "$dir/list"
+  grep -q app "$dir/list" || fail "list missing mapping name"
+  grep -q 18080:8080 "$dir/list" || fail "list missing ports"
+
+  if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" KUBECTL_LOG="$dir/kubectl.log" \
+    PATH="$dir/bin:$PATH" bash -c "cd '$dir/proj' && '$KNS' pf start 18080:9090" \
+    >"$dir/duplicate" 2>&1; then
+    fail "duplicate local port should fail"
+  fi
+  grep -q "18080" "$dir/duplicate" || fail "duplicate error missing local port"
+  [[ $(printf '%s\n' "$dir/cfg"/pf/*.env | wc -l | tr -d ' ') == 1 ]] ||
+    fail "duplicate start wrote another record"
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+    bash -c "cd '$dir/proj' && '$KNS' pf stop app"
+  [[ ! -e "$record" ]] || fail "stop did not remove record"
+  wait_for_dead "$pid" || fail "stop did not terminate process"
+}
+
+test_pf_bg_cleans_stale_records() {
+  local dir="$TMP/pf-stale"
+  mkdir -p "$dir/home" "$dir/cfg/pf" "$dir/proj"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+KNS_POD="web-0"
+EOF
+  cat > "$dir/cfg/pf/stale-list.env" <<EOF
+KNS_PF_ID="stale-list"
+KNS_PF_PID="999999"
+KNS_PF_ROOT="$dir/proj"
+KNS_PF_ENV=""
+KNS_PF_NAME="app"
+KNS_PF_PORTS="18080:8080"
+KNS_PF_TARGET="pod/web-0"
+KNS_PF_CONTEXT="ctx"
+KNS_PF_NAMESPACE=""
+KNS_PF_STARTED="0"
+KNS_PF_LOG="$dir/cfg/pf/stale-list.log"
+EOF
+
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' pf list" > "$dir/list"
+  [[ ! -e "$dir/cfg/pf/stale-list.env" ]] || fail "list did not clean stale record"
+
+  cat > "$dir/cfg/pf/stale-stop.env" <<EOF
+KNS_PF_ID="stale-stop"
+KNS_PF_PID="999999"
+KNS_PF_ROOT="$dir/proj"
+KNS_PF_ENV=""
+KNS_PF_NAME="app"
+KNS_PF_PORTS="18080:8080"
+KNS_PF_TARGET="pod/web-0"
+KNS_PF_CONTEXT="ctx"
+KNS_PF_NAMESPACE=""
+KNS_PF_STARTED="0"
+KNS_PF_LOG="$dir/cfg/pf/stale-stop.log"
+EOF
+  HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" \
+    bash -c "cd '$dir/proj' && '$KNS' pf stop stale-stop"
+  [[ ! -e "$dir/cfg/pf/stale-stop.env" ]] || fail "stop did not clean stale record"
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
@@ -272,4 +382,6 @@ test_pf_foreground_mapping_target
 test_pf_foreground_default_service
 test_pf_foreground_requires_ports
 test_pf_foreground_requires_target
+test_pf_bg_lifecycle
+test_pf_bg_cleans_stale_records
 echo "OK (partial — more tests added in later tasks)"
