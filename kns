@@ -1048,7 +1048,9 @@ cmd_service() {
 }
 
 _kns_valid_forward_name() {
-  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] &&
+    [[ "$1" != DEFAULT ]] &&
+    [[ "$1" != *_TARGET ]]
 }
 
 _kns_is_ports_arg() {

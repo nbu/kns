@@ -134,9 +134,28 @@ EOF
   grep -q KNS_FORWARD_app "$dir/proj/.kns.conf" && fail "forward keys remain" || true
 }
 
+test_pf_rejects_reserved_names() {
+  local dir="$TMP/pf-reserved"
+  mkdir -p "$dir/home" "$dir/cfg" "$dir/proj" "$dir/bin"
+  make_kubectl "$dir"
+  cat > "$dir/proj/.kns.conf" <<'EOF'
+KNS_CONTEXT="ctx"
+EOF
+  for name in DEFAULT foo_TARGET; do
+    if HOME="$dir/home" KNS_CONFIG_DIR="$dir/cfg" PATH="$dir/bin:$PATH" \
+      bash -c "cd '$dir/proj' && '$KNS' pf set $name 8080:8080 svc/my-api" \
+      >"$dir/output-$name" 2>&1; then
+      fail "pf set $name should fail"
+    fi
+    grep -q KNS_FORWARD "$dir/proj/.kns.conf" &&
+      fail "pf set $name should not write forward keys" || true
+  done
+}
+
 test_service_set_single
 test_service_set_multi
 test_service_multi_rejects_no_session
 test_service_multi_rejects_stale_session
 test_pf_set_unset_single
+test_pf_rejects_reserved_names
 echo "OK (partial — more tests added in later tasks)"
